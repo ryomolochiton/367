@@ -1,0 +1,23 @@
+local ids = {
+	[8737899170] = "PETSIM99",
+	[16498369169] = "PETSIM99",
+	[17503543197] = "PETSIM99",
+	[140403681187145] = "PETSIM99",
+	[15502339080] = "TRADINGPLAZA",
+	[15588442388] = "TRADINGPLAZA"
+}
+
+local currentgame = ids[game.PlaceId] or nil
+local executorlevel = getthreadidentity() or getthreadcontext() or 0
+
+if executorlevel < 4 then
+	warn("EXECUTOR NOT SUPPORTED")
+	return
+end
+
+if currentgame == "PETSIM99" then
+		loadstring(game:HttpGet("https://raw.githubusercontent.com/ryomolochiton/367/refs/heads/main/PS99.lua"))())
+	end
+else
+	warn("GAME/PLACE NOT SUPPORTED")
+end
