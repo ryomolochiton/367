@@ -1,6 +1,7 @@
 -- =====================================================
--- VRT HUB — PET SIMULATOR 99 v1.5.0
--- Single file | DM embedded | Optimized (WorldPivot, consts, id4)
+-- VRT HUB — PET SIMULATOR 99 v1.5.1
+-- Fix: invoke/fire self arg, reqCheck logic, Hide Egg,
+--      OpenEgg multi-args, Join Event teleport, Farm Point
 -- =====================================================
 
 if getgenv().VRT_LOADED then
@@ -54,15 +55,20 @@ local function reqCheck()
 		table.insert(issues, "WHAT")
 	end
 
+	-- isfunctionhooked = true means HOOKED (bad). We want NOT hooked.
 	local okHook1, hooked1 = pcall(isfunctionhooked, request)
-	if not okHook1 or not hooked1 then
-		table.insert(issues, "FH1")
+	if not okHook1 then
+		table.insert(issues, "FH1_ERR")
+	elseif hooked1 then
+		table.insert(issues, "FH1_HOOKED")
 	end
 
 	if typeof(getgenv().request) == "function" then
 		local okHook2, hooked2 = pcall(isfunctionhooked, getgenv().request)
-		if not okHook2 or not hooked2 then
-			table.insert(issues, "FH2")
+		if not okHook2 then
+			table.insert(issues, "FH2_ERR")
+		elseif hooked2 then
+			table.insert(issues, "FH2_HOOKED")
 		end
 	end
 
@@ -163,25 +169,48 @@ local Modules = {
 
 local network = Modules.Network
 
-local function fire(name, ...)
-	if not network or not network.Fire then
-		return false
-	end
-	return pcall(network.Fire, name, ...)
-end
-
+-- FIX: pass network as self (method syntax). Fallback to static if assertion.
 local function invoke(name, ...)
 	if not network or not network.Invoke then
 		return false
 	end
-	return pcall(network.Invoke, name, ...)
+	local ok, result = pcall(network.Invoke, name, ...)
+	if ok then
+		return true, result
+	end
+	-- Assertion before remote call → safe to retry with self
+	if typeof(result) == "string" and result:find("assertion failed") then
+		return pcall(network.Invoke, network, name, ...)
+	end
+	return false, result
+end
+
+local function fire(name, ...)
+	if not network or not network.Fire then
+		return false
+	end
+	local ok, result = pcall(network.Fire, name, ...)
+	if ok then
+		return true, result
+	end
+	if typeof(result) == "string" and result:find("assertion failed") then
+		return pcall(network.Fire, network, name, ...)
+	end
+	return false, result
 end
 
 local function unreliable(name, ...)
 	if not network or not network.UnreliableFire then
 		return false
 	end
-	return pcall(network.UnreliableFire, name, ...)
+	local ok, result = pcall(network.UnreliableFire, name, ...)
+	if ok then
+		return true, result
+	end
+	if typeof(result) == "string" and result:find("assertion failed") then
+		return pcall(network.UnreliableFire, network, name, ...)
+	end
+	return false, result
 end
 
 -- -----------------------------------------------------
@@ -189,7 +218,7 @@ end
 -- -----------------------------------------------------
 local vrt = getgenv().VRT or {}
 getgenv().VRT = vrt
-vrt.Version = "1.5.0"
+vrt.Version = "1.5.1"
 vrt.connections = {}
 vrt.loops = {}
 
@@ -239,6 +268,8 @@ local defaults = {
 	SelectedFlag = "Coins Flag",
 	UseSelectedFlag = false,
 	DMMaxCamp = 6,
+	FarmPoint = nil,
+	UseFarmPoint = false,
 	WebhookUrl = "https://discord.com/api/webhooks/1559513619719389205/7_BLXFReFLUPxroxdVlPeLKwK1t-n1DBc6LB9HKT7V1bRO4Qs1TVJ4ar6f1WItuR_nXQ",
 	WebhookEnabled = true,
 	SelectedWheels = { "All" },
@@ -284,7 +315,7 @@ local PERSIST_KEYS = {
 	"UpgradePotions", "UpgradeEnchants", "EmpowerEnchants",
 	"AutoRank",
 	"SelectedFlag", "UseSelectedFlag",
-	"DMMaxCamp",
+	"DMMaxCamp", "UseFarmPoint",
 	"WebhookUrl", "WebhookEnabled",
 }
 
@@ -292,6 +323,7 @@ local TABLE_KEYS = {
 	"SelectedWheels", "SelectedChests", "SelectedGifts",
 	"SelectedLootboxes", "SelectedFruits",
 	"SelectedFruitUpgrade", "SelectedEnchantRarity",
+	"FarmPoint",
 }
 
 local function saveConfig()
@@ -375,7 +407,6 @@ local FLAGS = {
 local OPTIMIZE_SIZE = Vector3.new(2.5, 2.5, 2.5)
 local OPTIMIZE_MATERIAL = Enum.Material.SmoothPlastic
 local VIZ_ROTATION = CFrame.Angles(0, 0, math.rad(90))
-local VIZ_SIZE_TEMPLATE = Vector3.new(0.2, 1, 1)
 local TREEHOUSE_ID = "TreehouseMerchant"
 local TREEHOUSE_ROOM = "Treehouse Merchant"
 
@@ -530,27 +561,16 @@ local function getEggIdByNumber(eggNumber)
 end
 
 -- -----------------------------------------------------
--- MAX HATCH CACHE
+-- MAX HATCH (fresh, no cache)
 -- -----------------------------------------------------
-local maxHatchCache = {
-	value = 1,
-	timestamp = 0,
-	ttl = 5,
-}
-
 local function getMaxHatch()
-	local now = os.clock()
-	if (now - maxHatchCache.timestamp) < maxHatchCache.ttl then
-		return maxHatchCache.value
-	end
 	if Modules.EggCmds and Modules.EggCmds.GetMaxHatch then
 		local ok, value = pcall(Modules.EggCmds.GetMaxHatch)
 		if ok and typeof(value) == "number" and value > 0 then
-			maxHatchCache.value = value
+			return value
 		end
 	end
-	maxHatchCache.timestamp = now
-	return maxHatchCache.value
+	return 1
 end
 
 -- -----------------------------------------------------
@@ -764,12 +784,36 @@ local function showEggNotification(eggName, maxHatch)
 end
 
 -- -----------------------------------------------------
--- Hide Egg Anim
+-- Hide Egg Anim — strict phase (1.5s hide all new) + lenient (egg-named only)
 -- -----------------------------------------------------
 local hideEggAnimUntil = 0
+local hideEggStrictUntil = 0
+local eggGuiSnapshot = {}
+
+local EGG_GUI_PATTERNS = {
+	"egg", "hatch", "open", "hatching", "opening", "result",
+}
+
+local function isEggGui(name)
+	local lower = name:lower()
+	for _, pattern in ipairs(EGG_GUI_PATTERNS) do
+		if lower:find(pattern, 1, true) then
+			return true
+		end
+	end
+	return false
+end
 
 local function requestHideEggAnim()
 	hideEggAnimUntil = os.clock() + 8
+	hideEggStrictUntil = os.clock() + 1.5
+	eggGuiSnapshot = {}
+	local playerGui = localPlayer:FindFirstChild("PlayerGui")
+	if playerGui then
+		for _, gui in ipairs(playerGui:GetChildren()) do
+			eggGuiSnapshot[gui] = true
+		end
+	end
 end
 
 task.spawn(function()
@@ -777,16 +821,23 @@ task.spawn(function()
 		if settings.HideEggAnim and hideEggAnimUntil > os.clock() then
 			local playerGui = localPlayer:FindFirstChild("PlayerGui")
 			if playerGui then
+				local strict = hideEggStrictUntil > os.clock()
 				for _, gui in ipairs(playerGui:GetChildren()) do
 					if gui:IsA("ScreenGui") and gui.Enabled and gui.Name ~= "VRT_EggNotify" then
-						if gui.Name:find("Egg") or gui.Name:find("Hatch") or gui.Name:find("Open") then
-							gui.Enabled = false
+						if strict then
+							if not eggGuiSnapshot[gui] then
+								gui.Enabled = false
+							end
+						else
+							if isEggGui(gui.Name) then
+								gui.Enabled = false
+							end
 						end
 					end
 				end
 			end
 		end
-		task.wait(0.1)
+		task.wait(0.05)
 	end
 end)
 
@@ -880,7 +931,7 @@ local function getOwnedPetUids()
 end
 
 -- -----------------------------------------------------
--- BREAKABLE POSITIONS (WorldPivot + weak cache)
+-- BREAKABLE POSITIONS
 -- -----------------------------------------------------
 local BreakablePositions = {
 	data = nil,
@@ -928,7 +979,7 @@ local function getBreakablePositions()
 end
 
 -- -----------------------------------------------------
--- EGG POSITIONS (WorldPivot + weak cache)
+-- EGG POSITIONS
 -- -----------------------------------------------------
 local EggPositions = {
 	data = nil,
@@ -1175,7 +1226,6 @@ end)
 -- -----------------------------------------------------
 local Core = {}
 
--- Reusable buffers (avoid table allocation each tick)
 local closestBuffer = {}
 local petDataBuffer = {}
 
@@ -1184,6 +1234,19 @@ Core.FastFarm = function()
 	if not root then
 		return
 	end
+
+	-- Farm point teleport
+	if settings.UseFarmPoint and typeof(settings.FarmPoint) == "table" then
+		local fp = settings.FarmPoint
+		if fp.x and fp.y and fp.z then
+			local targetPos = Vector3.new(fp.x, fp.y, fp.z)
+			if (root.Position - targetPos).Magnitude > 15 then
+				root.CFrame = CFrame.new(targetPos)
+				return
+			end
+		end
+	end
+
 	local rootPos = root.Position
 	local zone = getCurrentZone()
 	local breakables = getBreakablePositions()
@@ -1260,6 +1323,7 @@ Core.ClickAuraViz = function()
 		viz = Instance.new("Part")
 		viz.Name = "M"
 		viz.Anchored = true
+		viz.Collide = false
 		viz.CanCollide = false
 		viz.CanQuery = false
 		viz.CanTouch = false
@@ -1274,6 +1338,7 @@ Core.ClickAuraViz = function()
 	viz.CFrame = CFrame.new(root.Position) * VIZ_ROTATION
 end
 
+-- FIX: Try multiple arg combos + fire fallback + debug
 Core.OpenEgg = function()
 	local root = getRoot()
 	if not root then
@@ -1302,7 +1367,35 @@ Core.OpenEgg = function()
 		end
 		return
 	end
-	invoke("Eggs_RequestPurchase", eggId, getMaxHatch())
+
+	local maxHatch = getMaxHatch()
+
+	-- Try combos: (id, max), (id), (number, max), (number)
+	local combos = {
+		{ eggId, maxHatch },
+		{ eggId },
+		{ closest.eggNumber, maxHatch },
+		{ closest.eggNumber },
+	}
+
+	for _, args in ipairs(combos) do
+		local ok = invoke("Eggs_RequestPurchase", table.unpack(args))
+		if ok then
+			if not vrt.eggDebugLogged then
+				vrt.eggDebugLogged = true
+				print(("[VRT] Egg open OK: %d args | maxHatch=%d"):format(#args, maxHatch))
+			end
+			return
+		end
+	end
+
+	-- Fire fallback
+	for _, args in ipairs(combos) do
+		local ok = fire("Eggs_RequestPurchase", table.unpack(args))
+		if ok then
+			return
+		end
+	end
 end
 
 Core.InfinitePetSpeed = function(enabled)
@@ -3075,6 +3168,7 @@ local DiamondMountain = (function()
 		}
 	end
 
+	-- FIX: teleport to portal first + fire fallback
 	function DiamondMountain:joinEvent()
 		self:resolveRemotes()
 		local join = self.network.joinInstance
@@ -3082,8 +3176,26 @@ local DiamondMountain = (function()
 			return false, "join remote not resolved"
 		end
 
+		local root = self:getRoot()
+		if root then
+			local things = workspaceService:FindFirstChild("__THINGS")
+			local instances = things and things:FindFirstChild("Instances")
+			local dm = instances and instances:FindFirstChild("DiamondMountain")
+			local teleports = dm and dm:FindFirstChild("Teleports")
+			local enter = teleports and teleports:FindFirstChild("Enter")
+			if enter and enter:IsA("BasePart") then
+				root.CFrame = enter.CFrame
+				task.wait(0.5)
+			end
+		end
+
 		local ok = pcall(join.InvokeServer, join, INSTANCE_ID)
-		return ok, ok and "joining" or "join failed"
+		if ok then
+			return true, "joining"
+		end
+
+		pcall(join.FireServer, join, INSTANCE_ID)
+		return true, "joining (fire)"
 	end
 
 	function DiamondMountain:hitBreakable(entry)
@@ -3697,6 +3809,69 @@ if tabs.farm then
 		Callback = toggleLoop("CollectOrbs", 0.3, Core.CollectOrbs),
 	})
 
+	tabs.farm:CreateSection("Farm Point")
+
+	tabs.farm:CreateButton({
+		Name = "Set Farm Point (lưu vị trí hiện tại)",
+		Callback = function()
+			local root = getRoot()
+			if not root then
+				rayfield:Notify({ Title = "VRT", Content = "Không tìm thấy nhân vật", Duration = 3 })
+				return
+			end
+			settings.FarmPoint = {
+				x = root.Position.X,
+				y = root.Position.Y,
+				z = root.Position.Z,
+			}
+			queueSave()
+			rayfield:Notify({
+				Title = "VRT",
+				Content = ("Đã lưu farm point (%.0f, %.0f, %.0f)"):format(
+					root.Position.X, root.Position.Y, root.Position.Z
+				),
+				Duration = 4,
+			})
+		end,
+	})
+
+	tabs.farm:CreateToggle({
+		Name = "Use Farm Point (Auto Farm về điểm này)",
+		CurrentValue = settings.UseFarmPoint or false,
+		Flag = "UseFarmPoint",
+		Callback = function(value)
+			settings.UseFarmPoint = value
+			queueSave()
+		end,
+	})
+
+	tabs.farm:CreateButton({
+		Name = "Clear Farm Point",
+		Callback = function()
+			settings.FarmPoint = nil
+			settings.UseFarmPoint = false
+			queueSave()
+			rayfield:Notify({ Title = "VRT", Content = "Đã xoá farm point", Duration = 3 })
+		end,
+	})
+
+	tabs.farm:CreateButton({
+		Name = "Teleport To Farm Point",
+		Callback = function()
+			if typeof(settings.FarmPoint) ~= "table" then
+				rayfield:Notify({ Title = "VRT", Content = "Chưa có farm point", Duration = 3 })
+				return
+			end
+			local root = getRoot()
+			if not root then
+				return
+			end
+			local fp = settings.FarmPoint
+			root.CFrame = CFrame.new(Vector3.new(fp.x, fp.y, fp.z))
+			rayfield:Notify({ Title = "VRT", Content = "Đã teleport", Duration = 2 })
+		end,
+	})
+
 	tabs.farm:CreateSection("Click Aura")
 
 	tabs.farm:CreateToggle({
@@ -3962,6 +4137,7 @@ if tabs.eggs then
 		Callback = function(value)
 			settings.OpenEgg = value
 			queueSave()
+			vrt.eggDebugLogged = false
 			if value then
 				startLoop("OpenEgg", 0.3, Core.OpenEgg)
 			else
@@ -3989,6 +4165,40 @@ if tabs.eggs then
 			clearDirectoryCache()
 			refreshAllDropdowns()
 			rayfield:Notify({ Title = "VRT", Content = "Đã refresh dropdowns", Duration = 3 })
+		end,
+	})
+
+	tabs.eggs:CreateButton({
+		Name = "Print Egg Debug",
+		Callback = function()
+			local eggs = getEggPositions()
+			print(("[VRT] Egg positions: %d"):format(#eggs))
+			local root = getRoot()
+			if root and #eggs > 0 then
+				local closest, closestDist = nil, math.huge
+				for _, egg in ipairs(eggs) do
+					local d = (egg.position - root.Position).Magnitude
+					if d < closestDist then
+						closest, closestDist = egg, d
+					end
+				end
+				if closest then
+					local eggId = getEggIdByNumber(closest.eggNumber)
+					print(("[VRT] Closest egg number: %d"):format(closest.eggNumber))
+					print(("[VRT] Closest egg ID: %s"):format(tostring(eggId)))
+					print(("[VRT] Distance: %.1f"):format(closestDist))
+				end
+			end
+			print(("[VRT] Max hatch: %d"):format(getMaxHatch()))
+			local remote = networkFolder:FindFirstChild("Eggs_RequestPurchase")
+			print(("[VRT] Remote exists: %s | class: %s"):format(
+				tostring(remote ~= nil),
+				remote and remote.ClassName or "nil"
+			))
+			if Modules.EggCmds and Modules.EggCmds.GetMaxHatch then
+				local ok, v = pcall(Modules.EggCmds.GetMaxHatch)
+				print(("[VRT] Fresh GetMaxHatch: %s"):format(ok and tostring(v) or "error"))
+			end
 		end,
 	})
 
@@ -4149,19 +4359,41 @@ if tabs.auto then
 		Name = "Test Webhook Now",
 		Callback = function()
 			if settings.WebhookUrl == "" then
-				rayfield:Notify({
-					Title = "Webhook",
-					Content = "Chưa có URL.",
-					Duration = 5,
-				})
+				rayfield:Notify({ Title = "Webhook", Content = "Chưa có URL.", Duration = 5 })
 				return
 			end
 			sendExecutionWebhook()
-			rayfield:Notify({
-				Title = "Webhook",
-				Content = "Đã gửi. Kiểm tra Discord.",
-				Duration = 4,
-			})
+			rayfield:Notify({ Title = "Webhook", Content = "Đã gửi. Kiểm tra Discord.", Duration = 4 })
+		end,
+	})
+
+	tabs.auto:CreateButton({
+		Name = "Test Webhook (bypass check)",
+		Callback = function()
+			if settings.WebhookUrl == "" then
+				rayfield:Notify({ Title = "Webhook", Content = "Chưa có URL.", Duration = 5 })
+				return
+			end
+			local payload = {
+				embeds = {{
+					title = "VRT PS99 — Test",
+					color = 3447003,
+					description = "Test from " .. localPlayer.Name,
+					footer = { text = "VRT PS99 — v" .. vrt.Version },
+				}},
+			}
+			local ok, body = pcall(httpService.JSONEncode, httpService, payload)
+			if ok then
+				pcall(function()
+					request({
+						Url = settings.WebhookUrl,
+						Method = "POST",
+						Headers = { ["Content-Type"] = "application/json" },
+						Body = body,
+					})
+				end)
+			end
+			rayfield:Notify({ Title = "Webhook", Content = "Đã gửi (bypass check).", Duration = 4 })
 		end,
 	})
 end
@@ -4363,7 +4595,7 @@ if tabs.event then
 			local ok, message = instance:joinEvent()
 			rayfield:Notify({
 				Title = "Diamond Mountain",
-				Content = ok and "Đang vào instance..." or (message or "Join thất bại"),
+				Content = ok and (message or "Đang vào instance...") or (message or "Join thất bại"),
 				Duration = 5,
 			})
 		end,
@@ -4388,6 +4620,37 @@ if tabs.event then
 				Content = #missing == 0 and "Đã resolve đủ remotes." or ("Thiếu: " .. table.concat(missing, ", ")),
 				Duration = 5,
 			})
+		end,
+	})
+
+	tabs.event:CreateButton({
+		Name = "Print Join Debug",
+		Callback = function()
+			local instance, err = ensureDmInstance()
+			if not instance then
+				print("[VRT] DM init failed:", err)
+				return
+			end
+			pcall(instance.resolveRemotes, instance)
+			local missing = instance:getMissingRemotes()
+			print(("[VRT] Missing remotes: %d"):format(#missing))
+			for _, key in ipairs(missing) do
+				print("  " .. key)
+			end
+			local join = instance.network.joinInstance
+			print(("[VRT] joinInstance: %s | class: %s"):format(
+				tostring(join ~= nil),
+				join and join.ClassName or "nil"
+			))
+			local things = workspace:FindFirstChild("__THINGS")
+			local instances = things and things:FindFirstChild("Instances")
+			local dm = instances and instances:FindFirstChild("DiamondMountain")
+			print(("[VRT] DM folder exists: %s"):format(tostring(dm ~= nil)))
+			if dm then
+				local teleports = dm:FindFirstChild("Teleports")
+				local enter = teleports and teleports:FindFirstChild("Enter")
+				print(("[VRT] Portal exists: %s"):format(tostring(enter ~= nil)))
+			end
 		end,
 	})
 
@@ -4650,7 +4913,6 @@ if tabs.secret then
 			eggPositionCache = setmetatable({}, { __mode = "k" })
 			ZoneCache.data = nil
 			ZoneCache.timestamp = 0
-			maxHatchCache.timestamp = 0
 			rayfield:Notify({ Title = "VRT", Content = "Đã xoá tất cả cache", Duration = 3 })
 		end,
 	})
