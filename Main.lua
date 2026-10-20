@@ -1,7 +1,7 @@
 -- =====================================================
--- VRT HUB — PET SIMULATOR 99 v1.5.1
--- Fix: invoke/fire self arg, reqCheck logic, Hide Egg,
---      OpenEgg multi-args, Join Event teleport, Farm Point
+-- VRT HUB — PET SIMULATOR 99 v1.6.0
+-- Fix: Hide Egg, Flag, Click Aura, Daycare, Join Event toggle,
+--      Admin Abuse toggle, Anti-Lag, remove Auto Hatch + Webhook section
 -- =====================================================
 
 if getgenv().VRT_LOADED then
@@ -55,7 +55,6 @@ local function reqCheck()
 		table.insert(issues, "WHAT")
 	end
 
-	-- isfunctionhooked = true means HOOKED (bad). We want NOT hooked.
 	local okHook1, hooked1 = pcall(isfunctionhooked, request)
 	if not okHook1 then
 		table.insert(issues, "FH1_ERR")
@@ -169,7 +168,6 @@ local Modules = {
 
 local network = Modules.Network
 
--- FIX: pass network as self (method syntax). Fallback to static if assertion.
 local function invoke(name, ...)
 	if not network or not network.Invoke then
 		return false
@@ -178,7 +176,6 @@ local function invoke(name, ...)
 	if ok then
 		return true, result
 	end
-	-- Assertion before remote call → safe to retry with self
 	if typeof(result) == "string" and result:find("assertion failed") then
 		return pcall(network.Invoke, network, name, ...)
 	end
@@ -218,7 +215,7 @@ end
 -- -----------------------------------------------------
 local vrt = getgenv().VRT or {}
 getgenv().VRT = vrt
-vrt.Version = "1.5.1"
+vrt.Version = "1.6.0"
 vrt.connections = {}
 vrt.loops = {}
 
@@ -238,6 +235,7 @@ local defaults = {
 	EggNotification = true,
 	InfinitePetSpeed = false,
 	OptimizePets = false,
+	AntiLag = false,
 	Daycare = false,
 	PetSlots = false,
 	AutoEggSlots = false,
@@ -258,7 +256,6 @@ local defaults = {
 	OpenLootboxes = false,
 	ConsumeFruits = false,
 	FarmTreehouse = false,
-	AutoHatch = false,
 	UpgradeFruits = false,
 	UpgradeFruitsShiny = false,
 	UpgradePotions = false,
@@ -270,6 +267,7 @@ local defaults = {
 	DMMaxCamp = 6,
 	FarmPoint = nil,
 	UseFarmPoint = false,
+	AdminAbuse = false,
 	WebhookUrl = "https://discord.com/api/webhooks/1559513619719389205/7_BLXFReFLUPxroxdVlPeLKwK1t-n1DBc6LB9HKT7V1bRO4Qs1TVJ4ar6f1WItuR_nXQ",
 	WebhookEnabled = true,
 	SelectedWheels = { "All" },
@@ -303,19 +301,19 @@ local PERSIST_KEYS = {
 	"FastFarmHeartbeat", "FastFarmLoop", "CollectOrbs",
 	"ClickAura", "ClickAuraViz",
 	"OpenEgg", "HideEggAnim", "EggNotification",
-	"InfinitePetSpeed", "OptimizePets",
+	"InfinitePetSpeed", "OptimizePets", "AntiLag",
 	"Daycare", "PetSlots", "AutoEggSlots", "Zones", "Ultimate",
 	"FreeGifts", "RankRewards",
 	"MailboxClaim", "MailboxSendHuges", "MailboxUsername", "MailboxHugeMode",
 	"Relics", "SpinWheels", "OpenChests",
 	"CombineKeysAll", "CombineKeysOnce",
 	"OpenGifts", "OpenLootboxes", "ConsumeFruits",
-	"FarmTreehouse", "AutoHatch",
+	"FarmTreehouse",
 	"UpgradeFruits", "UpgradeFruitsShiny",
 	"UpgradePotions", "UpgradeEnchants", "EmpowerEnchants",
 	"AutoRank",
 	"SelectedFlag", "UseSelectedFlag",
-	"DMMaxCamp", "UseFarmPoint",
+	"DMMaxCamp", "UseFarmPoint", "AdminAbuse",
 	"WebhookUrl", "WebhookEnabled",
 }
 
@@ -560,9 +558,6 @@ local function getEggIdByNumber(eggNumber)
 	return eggNumberCache[eggNumber]
 end
 
--- -----------------------------------------------------
--- MAX HATCH (fresh, no cache)
--- -----------------------------------------------------
 local function getMaxHatch()
 	if Modules.EggCmds and Modules.EggCmds.GetMaxHatch then
 		local ok, value = pcall(Modules.EggCmds.GetMaxHatch)
@@ -599,7 +594,7 @@ local function getCurrentZone()
 end
 
 -- -----------------------------------------------------
--- Webhook.
+-- Webhook (auto-send only, no UI section)
 -- -----------------------------------------------------
 local function sendWebhook(url, payload)
 	if not url or url == "" then
@@ -784,29 +779,15 @@ local function showEggNotification(eggName, maxHatch)
 end
 
 -- -----------------------------------------------------
--- Hide Egg Anim — strict phase (1.5s hide all new) + lenient (egg-named only)
+-- Hide Egg Anim — strict 2s hide all new GUIs
 -- -----------------------------------------------------
 local hideEggAnimUntil = 0
 local hideEggStrictUntil = 0
 local eggGuiSnapshot = {}
 
-local EGG_GUI_PATTERNS = {
-	"egg", "hatch", "open", "hatching", "opening", "result",
-}
-
-local function isEggGui(name)
-	local lower = name:lower()
-	for _, pattern in ipairs(EGG_GUI_PATTERNS) do
-		if lower:find(pattern, 1, true) then
-			return true
-		end
-	end
-	return false
-end
-
 local function requestHideEggAnim()
 	hideEggAnimUntil = os.clock() + 8
-	hideEggStrictUntil = os.clock() + 1.5
+	hideEggStrictUntil = os.clock() + 2
 	eggGuiSnapshot = {}
 	local playerGui = localPlayer:FindFirstChild("PlayerGui")
 	if playerGui then
@@ -829,7 +810,8 @@ task.spawn(function()
 								gui.Enabled = false
 							end
 						else
-							if isEggGui(gui.Name) then
+							local lower = gui.Name:lower()
+							if lower:find("egg") or lower:find("hatch") or lower:find("open") or lower:find("result") then
 								gui.Enabled = false
 							end
 						end
@@ -837,7 +819,7 @@ task.spawn(function()
 				end
 			end
 		end
-		task.wait(0.05)
+		task.wait(0.03)
 	end
 end)
 
@@ -1235,7 +1217,6 @@ Core.FastFarm = function()
 		return
 	end
 
-	-- Farm point teleport
 	if settings.UseFarmPoint and typeof(settings.FarmPoint) == "table" then
 		local fp = settings.FarmPoint
 		if fp.x and fp.y and fp.z then
@@ -1292,6 +1273,7 @@ Core.CollectOrbs = function()
 	end
 end
 
+-- Click Aura: 0.05s interval, fire unreliable + fallback fire
 Core.ClickAura = function()
 	local root = getRoot()
 	if not root then
@@ -1300,10 +1282,19 @@ Core.ClickAura = function()
 	local rootPos = root.Position
 	local radius = settings.ClickAuraRadius
 	local breakables = getBreakablePositions()
+	local hit = 0
 	for _, item in ipairs(breakables) do
 		if (item.position - rootPos).Magnitude <= radius then
-			unreliable("Breakables_PlayerDealDamage", item.name)
+			local ok = unreliable("Breakables_PlayerDealDamage", item.name)
+			if not ok then
+				fire("Breakables_PlayerDealDamage", item.name)
+			end
+			hit += 1
 		end
+	end
+	if hit > 0 and not vrt.clickAuraDebug then
+		vrt.clickAuraDebug = true
+		print(("[VRT] Click Aura hit %d breakables"):format(hit))
 	end
 end
 
@@ -1323,7 +1314,6 @@ Core.ClickAuraViz = function()
 		viz = Instance.new("Part")
 		viz.Name = "M"
 		viz.Anchored = true
-		viz.Collide = false
 		viz.CanCollide = false
 		viz.CanQuery = false
 		viz.CanTouch = false
@@ -1338,7 +1328,6 @@ Core.ClickAuraViz = function()
 	viz.CFrame = CFrame.new(root.Position) * VIZ_ROTATION
 end
 
--- FIX: Try multiple arg combos + fire fallback + debug
 Core.OpenEgg = function()
 	local root = getRoot()
 	if not root then
@@ -1370,7 +1359,6 @@ Core.OpenEgg = function()
 
 	local maxHatch = getMaxHatch()
 
-	-- Try combos: (id, max), (id), (number, max), (number)
 	local combos = {
 		{ eggId, maxHatch },
 		{ eggId },
@@ -1389,7 +1377,6 @@ Core.OpenEgg = function()
 		end
 	end
 
-	-- Fire fallback
 	for _, args in ipairs(combos) do
 		local ok = fire("Eggs_RequestPurchase", table.unpack(args))
 		if ok then
@@ -1454,9 +1441,76 @@ Core.OptimizeBreakables = function()
 	end)
 end
 
+-- Anti-Lag: remove all effects
+Core.AntiLag = function()
+	local things = workspace:FindFirstChild("__THINGS")
+	if not things then
+		return
+	end
+	local removed = 0
+	for _, descendant in ipairs(things:GetDescendants()) do
+		if descendant:IsA("ParticleEmitter")
+			or descendant:IsA("Beam")
+			or descendant:IsA("Trail")
+			or descendant:IsA("Smoke")
+			or descendant:IsA("Fire")
+			or descendant:IsA("Sparkles")
+			or descendant:IsA("Explosion")
+		then
+			pcall(function()
+				descendant.Enabled = false
+			end)
+			removed += 1
+		elseif descendant:IsA("Texture")
+			or descendant:IsA("Decal")
+		then
+			pcall(function()
+				descendant.Transparency = 1
+			end)
+			removed += 1
+		end
+	end
+	-- Remove fog, lighting
+	pcall(function()
+		game:GetService("Lighting").FogEnd = 100000
+		game:GetService("Lighting").GlobalShadows = false
+	end)
+	return removed
+end
+
+-- Daycare: enroll + claim
 Core.Daycare = function()
 	local daycare = Modules.DaycareCmds
-	if not daycare or not daycare.GetMaxSlots or not daycare.GetUsedSlots then
+	if not daycare then
+		return
+	end
+
+	-- Try claim first
+	if daycare.ComputeRemainingTime and daycare.Claim then
+		local save = getSaveCached()
+		if save and typeof(save.DaycareActive) == "table" then
+			local activeCount = 0
+			for _ in pairs(save.DaycareActive) do
+				activeCount += 1
+			end
+			if activeCount > 0 then
+				local okTime, remaining = pcall(daycare.ComputeRemainingTime, activeCount)
+				if okTime and remaining == 0 then
+					local okClaim, result = pcall(daycare.Claim, activeCount)
+					if okClaim and result then
+						if not vrt.daycareDebug then
+							vrt.daycareDebug = true
+							print("[VRT] Daycare: claimed pet")
+						end
+						invalidateSaveCache()
+					end
+				end
+			end
+		end
+	end
+
+	-- Then enroll
+	if not daycare.GetMaxSlots or not daycare.GetUsedSlots then
 		return
 	end
 	local okMax, maxSlots = pcall(daycare.GetMaxSlots)
@@ -1498,7 +1552,10 @@ Core.Daycare = function()
 		return
 	end
 	if daycare.Enroll then
-		pcall(daycare.Enroll, enroll)
+		local ok = pcall(daycare.Enroll, enroll)
+		if ok then
+			invalidateSaveCache()
+		end
 	else
 		invoke("Daycare: Enroll", enroll)
 	end
@@ -1573,6 +1630,7 @@ Core.GetFlagMaxAmount = function(flagId)
 	return math.min(owned, gameMax)
 end
 
+-- Flag: try method syntax + module + remote
 Core.ActivateFlag = function()
 	local flagId = settings.SelectedFlag
 	if not flagId or flagId == "" then
@@ -1580,7 +1638,7 @@ Core.ActivateFlag = function()
 	end
 	local flagCmds = Modules.FlexibleFlagCmds
 	if flagCmds and flagCmds.GetActiveFlag then
-		local ok, active = pcall(flagCmds.GetActiveFlag)
+		local ok, active = pcall(flagCmds.GetActiveFlag, flagCmds)
 		if ok and active then
 			return
 		end
@@ -1596,6 +1654,7 @@ Core.ActivateFlag = function()
 		end
 		return
 	end
+
 	local instanceId, areaId
 	if Modules.MapCmds and Modules.MapCmds.GetCurrentInstanceInfo then
 		local ok, info = pcall(Modules.MapCmds.GetCurrentInstanceInfo)
@@ -1604,6 +1663,7 @@ Core.ActivateFlag = function()
 			areaId = info.AreaId
 		end
 	end
+
 	if not vrt.flagDebug then
 		vrt.flagDebug = {}
 	end
@@ -1611,13 +1671,24 @@ Core.ActivateFlag = function()
 		vrt.flagDebug[flagId] = true
 		print(("[VRT] Use flag: %s | amount=%d (MAX)"):format(flagId, amount))
 	end
+
 	if flagCmds and flagCmds.Consume then
-		local ok = pcall(flagCmds.Consume, flagId, amount)
+		-- Method syntax
+		local ok = pcall(function()
+			return flagCmds:Consume(flagId, amount)
+		end)
 		if ok then
 			invalidateSaveCache()
 			return
 		end
+		-- Dot syntax
+		local ok2 = pcall(flagCmds.Consume, flagId, amount)
+		if ok2 then
+			invalidateSaveCache()
+			return
+		end
 	end
+
 	if instanceId and areaId then
 		local ok = invoke("FlexibleFlags_Consume", flagId, amount)
 		if ok then
@@ -1625,6 +1696,7 @@ Core.ActivateFlag = function()
 			return
 		end
 	end
+
 	invoke("Flags: Consume", flagId, amount)
 	invalidateSaveCache()
 end
@@ -1950,10 +2022,6 @@ end
 
 Core.EquipBest = function()
 	fire("Pets_EquipBest")
-end
-
-Core.ToggleAutoHatch = function()
-	fire("AutoHatch_Toggle")
 end
 
 Core.ClaimFakeCharacters = function()
@@ -2335,6 +2403,43 @@ local DiamondMountain = (function()
 				self.pendingCamp = campIndex
 				self.pendingAt = os.clock()
 				return "teleport camp " .. campIndex
+			end,
+		},
+		{
+			id = "autoFarmBest",
+			name = "Auto Farm Best (highest camp)",
+			interval = 1.5,
+			run = function(self)
+				local root = self:getRoot()
+				if not root then
+					return "no character"
+				end
+
+				if not self:getMountain() then
+					self:joinEvent()
+					return "joining instance"
+				end
+
+				local highest = self:getHighestOpenCamp()
+				local anchor = self:getCampAnchor(highest)
+				if anchor then
+					if distanceSq(root.Position, anchor) > CAMP_RADIUS * CAMP_RADIUS then
+						if self.network.teleportInstance then
+							pcall(function()
+								self.network.teleportInstance:InvokeServer(string.format("__Zone_%d", highest))
+							end)
+							return "teleport best camp " .. highest
+						end
+					end
+				end
+
+				local target = self:nearestBreakable(root.Position, FARM_RADIUS)
+				if target then
+					self:hitBreakable(target)
+					self:joinPets(target.id)
+					return string.format("farm best %s @%d", target.id, highest)
+				end
+				return "no target @camp " .. highest
 			end,
 		},
 		{
@@ -3030,31 +3135,6 @@ local DiamondMountain = (function()
 		return best
 	end
 
-	function DiamondMountain:breakablesNear(position, radius, limit)
-		local matches = {}
-		local radiusSq = radius * radius
-
-		for _, entry in ipairs(self:getBreakables()) do
-			local d = distanceSq(entry.part.Position, position)
-			if d <= radiusSq then
-				matches[#matches + 1] = { entry = entry, distanceSq = d }
-			end
-		end
-
-		table.sort(matches, function(a, b)
-			return a.distanceSq < b.distanceSq
-		end)
-
-		if limit and #matches > limit then
-			local trimmed = {}
-			for index = 1, limit do
-				trimmed[index] = matches[index]
-			end
-			return trimmed
-		end
-		return matches
-	end
-
 	function DiamondMountain:isCampWallUp(campIndex)
 		local now = os.clock()
 		local cached = self.wallCache[campIndex]
@@ -3168,7 +3248,6 @@ local DiamondMountain = (function()
 		}
 	end
 
-	-- FIX: teleport to portal first + fire fallback
 	function DiamondMountain:joinEvent()
 		self:resolveRemotes()
 		local join = self.network.joinInstance
@@ -3643,6 +3722,7 @@ getgenv().VRT_DiamondMountain = DiamondMountain
 
 local DM_FEATURES = {
 	{ id = "autoFarm", name = "Auto Farm" },
+	{ id = "autoFarmBest", name = "Auto Farm Best (highest camp)" },
 	{ id = "breakTrail", name = "Break Trail Chests" },
 	{ id = "fightYeti", name = "Fight The Yeti" },
 	{ id = "feedYeti", name = "Feed The Yeti" },
@@ -3881,7 +3961,8 @@ if tabs.farm then
 		Callback = function(value)
 			settings.ClickAura = value
 			queueSave()
-			bindConnection("ClickAura", runService.Heartbeat, Core.ClickAura, 0.15)
+			vrt.clickAuraDebug = false
+			bindConnection("ClickAura", runService.Heartbeat, Core.ClickAura, 0.05)
 		end,
 	})
 
@@ -3932,6 +4013,24 @@ if tabs.farm then
 		CurrentValue = settings.OptimizePets,
 		Flag = "OptimizePets",
 		Callback = toggleLoop("OptimizePets", 10, Core.OptimizePets),
+	})
+
+	tabs.farm:CreateToggle({
+		Name = "Anti-Lag (xoá hiệu ứng)",
+		CurrentValue = settings.AntiLag,
+		Flag = "AntiLag",
+		Callback = function(value)
+			settings.AntiLag = value
+			queueSave()
+			if value then
+				local removed = Core.AntiLag()
+				rayfield:Notify({
+					Title = "Anti-Lag",
+					Content = ("Đã xoá %d hiệu ứng"):format(removed or 0),
+					Duration = 3,
+				})
+			end
+		end,
 	})
 
 	tabs.farm:CreateButton({
@@ -4146,17 +4245,6 @@ if tabs.eggs then
 		end,
 	})
 
-	tabs.eggs:CreateToggle({
-		Name = "Auto Hatch (game feature)",
-		CurrentValue = settings.AutoHatch,
-		Flag = "AutoHatch",
-		Callback = function(value)
-			settings.AutoHatch = value
-			queueSave()
-			Core.ToggleAutoHatch()
-		end,
-	})
-
 	tabs.eggs:CreateSection("Utility")
 
 	tabs.eggs:CreateButton({
@@ -4195,10 +4283,6 @@ if tabs.eggs then
 				tostring(remote ~= nil),
 				remote and remote.ClassName or "nil"
 			))
-			if Modules.EggCmds and Modules.EggCmds.GetMaxHatch then
-				local ok, v = pcall(Modules.EggCmds.GetMaxHatch)
-				print(("[VRT] Fresh GetMaxHatch: %s"):format(ok and tostring(v) or "error"))
-			end
 		end,
 	})
 
@@ -4222,7 +4306,7 @@ if tabs.auto then
 		Name = "Auto Daycare (Claim and Enroll)",
 		CurrentValue = settings.Daycare,
 		Flag = "Daycare",
-		Callback = toggleLoop("Daycare", 60, Core.Daycare),
+		Callback = toggleLoop("Daycare", 30, Core.Daycare),
 	})
 
 	tabs.auto:CreateToggle({
@@ -4293,6 +4377,7 @@ if tabs.auto then
 			settings.SelectedFlag = option[1]
 			queueSave()
 			vrt.flagWarned = {}
+			vrt.flagDebug = {}
 		end,
 	})
 
@@ -4306,6 +4391,7 @@ if tabs.auto then
 			settings.UseSelectedFlag = value
 			queueSave()
 			vrt.flagWarned = {}
+			vrt.flagDebug = {}
 			if value then
 				startLoop("UseSelectedFlag", 2, Core.ActivateFlag)
 			else
@@ -4324,76 +4410,42 @@ if tabs.auto then
 				local max = Core.GetFlagMaxAmount(flagId)
 				print(("[VRT]   %s | owned=%d | max=%d"):format(flagId, owned, max))
 			end
-			if Modules.FlexibleFlagCmds and Modules.FlexibleFlagCmds.GetActiveFlag then
-				local ok, active = pcall(Modules.FlexibleFlagCmds.GetActiveFlag)
-				print(("[VRT] Active flag: %s"):format(ok and tostring(active) or "error"))
+			if Modules.FlexibleFlagCmds then
+				local cmds = Modules.FlexibleFlagCmds
+				print(("[VRT] FlexibleFlagCmds.Consume: %s"):format(tostring(cmds.Consume)))
+				print(("[VRT] FlexibleFlagCmds.GetActiveFlag: %s"):format(tostring(cmds.GetActiveFlag)))
+				if cmds.GetActiveFlag then
+					local ok, active = pcall(cmds.GetActiveFlag, cmds)
+					print(("[VRT] Active flag (method): %s"):format(ok and tostring(active) or "error"))
+					local ok2, active2 = pcall(cmds.GetActiveFlag)
+					print(("[VRT] Active flag (dot): %s"):format(ok2 and tostring(active2) or "error"))
+				end
 			end
-		end,
-	})
-
-	tabs.auto:CreateSection("Discord Webhook")
-
-	tabs.auto:CreateInput({
-		Name = "Webhook URL",
-		PlaceholderText = "https://discord.com/api/webhooks/...",
-		CurrentValue = settings.WebhookUrl,
-		RemoveTextAfterFocusLost = false,
-		Flag = "WebhookUrl",
-		Callback = function(value)
-			settings.WebhookUrl = value
-			queueSave()
-		end,
-	})
-
-	tabs.auto:CreateToggle({
-		Name = "Send Webhook on Script Load",
-		CurrentValue = settings.WebhookEnabled,
-		Flag = "WebhookEnabled",
-		Callback = function(value)
-			settings.WebhookEnabled = value
-			queueSave()
 		end,
 	})
 
 	tabs.auto:CreateButton({
-		Name = "Test Webhook Now",
+		Name = "Test Flag Consume",
 		Callback = function()
-			if settings.WebhookUrl == "" then
-				rayfield:Notify({ Title = "Webhook", Content = "Chưa có URL.", Duration = 5 })
+			local cmds = Modules.FlexibleFlagCmds
+			if not cmds then
+				print("[VRT] FlexibleFlagCmds not loaded")
 				return
 			end
-			sendExecutionWebhook()
-			rayfield:Notify({ Title = "Webhook", Content = "Đã gửi. Kiểm tra Discord.", Duration = 4 })
-		end,
-	})
-
-	tabs.auto:CreateButton({
-		Name = "Test Webhook (bypass check)",
-		Callback = function()
-			if settings.WebhookUrl == "" then
-				rayfield:Notify({ Title = "Webhook", Content = "Chưa có URL.", Duration = 5 })
-				return
+			local flagId = settings.SelectedFlag
+			print(("[VRT] Testing flag: %s"):format(flagId))
+			if cmds.Consume then
+				local ok1, err1 = pcall(cmds.Consume, flagId, 1)
+				print(("[VRT] Dot method: %s | %s"):format(tostring(ok1), tostring(err1)))
+				local ok2, err2 = pcall(function() return cmds:Consume(flagId, 1) end)
+				print(("[VRT] Colon method: %s | %s"):format(tostring(ok2), tostring(err2)))
 			end
-			local payload = {
-				embeds = {{
-					title = "VRT PS99 — Test",
-					color = 3447003,
-					description = "Test from " .. localPlayer.Name,
-					footer = { text = "VRT PS99 — v" .. vrt.Version },
-				}},
-			}
-			local ok, body = pcall(httpService.JSONEncode, httpService, payload)
-			if ok then
-				pcall(function()
-					request({
-						Url = settings.WebhookUrl,
-						Method = "POST",
-						Headers = { ["Content-Type"] = "application/json" },
-						Body = body,
-					})
-				end)
-			end
-			rayfield:Notify({ Title = "Webhook", Content = "Đã gửi (bypass check).", Duration = 4 })
+			print(("[VRT] Remote FlexibleFlags_Consume: %s"):format(
+				tostring(networkFolder:FindFirstChild("FlexibleFlags_Consume") ~= nil)
+			))
+			print(("[VRT] Remote Flags: Consume: %s"):format(
+				tostring(networkFolder:FindFirstChild("Flags: Consume") ~= nil)
+			))
 		end,
 	})
 end
@@ -4576,12 +4628,34 @@ if tabs.rank then
 	})
 end
 
--- ================= EVENT (Diamond Mountain — embedded) =================
+-- ================= EVENT =================
 if tabs.event then
 	tabs.event:CreateSection("Diamond Mountain")
 
+	-- Join Event as toggle
+	tabs.event:CreateToggle({
+		Name = "Auto Join Diamond Mountain",
+		CurrentValue = false,
+		Flag = "DM_AutoJoin",
+		Callback = function(value)
+			if value then
+				startLoop("DM_AutoJoin", 3, function()
+					local instance = ensureDmInstance()
+					if not instance then
+						return
+					end
+					if not instance:getMountain() then
+						instance:joinEvent()
+					end
+				end)
+			else
+				stopLoop("DM_AutoJoin")
+			end
+		end,
+	})
+
 	tabs.event:CreateButton({
-		Name = "Join Diamond Mountain",
+		Name = "Join Diamond Mountain Now",
 		Callback = function()
 			local instance, err = ensureDmInstance()
 			if not instance then
@@ -4790,8 +4864,23 @@ end
 if tabs.secret then
 	tabs.secret:CreateSection("Admin Abuse Section")
 
+	tabs.secret:CreateToggle({
+		Name = "Auto Claim Hidden Exclusive Egg",
+		CurrentValue = settings.AdminAbuse or false,
+		Flag = "AdminAbuse",
+		Callback = function(value)
+			settings.AdminAbuse = value
+			queueSave()
+			if value then
+				startLoop("AdminAbuse", 5, Core.ClaimFakeCharacters)
+			else
+				stopLoop("AdminAbuse")
+			end
+		end,
+	})
+
 	tabs.secret:CreateButton({
-		Name = "Claim Hidden Exclusive Egg",
+		Name = "Claim Hidden Exclusive Egg (Once)",
 		Callback = function()
 			Core.ClaimFakeCharacters()
 		end,
@@ -5025,7 +5114,7 @@ task.spawn(function()
 		bindConnection("FastFarmHeartbeat", runService.Heartbeat, Core.FastFarm)
 	end
 	if settings.ClickAura then
-		bindConnection("ClickAura", runService.Heartbeat, Core.ClickAura, 0.15)
+		bindConnection("ClickAura", runService.Heartbeat, Core.ClickAura, 0.05)
 	end
 	if settings.FastFarmLoop then
 		startLoop("FastFarmLoop", 0.15, Core.FastFarm)
@@ -5067,7 +5156,7 @@ task.spawn(function()
 		startLoop("OpenEgg", 0.3, Core.OpenEgg)
 	end
 	if settings.Daycare then
-		startLoop("Daycare", 60, Core.Daycare)
+		startLoop("Daycare", 30, Core.Daycare)
 	end
 	if settings.PetSlots then
 		startLoop("PetSlots", 10, Core.BuyPetSlots)
@@ -5120,6 +5209,9 @@ task.spawn(function()
 	end
 	if settings.UseSelectedFlag then
 		startLoop("UseSelectedFlag", 2, Core.ActivateFlag)
+	end
+	if settings.AdminAbuse then
+		startLoop("AdminAbuse", 5, Core.ClaimFakeCharacters)
 	end
 
 	print("[VRT] Config restored.")
@@ -5181,7 +5273,7 @@ getgenv().VRT_Unload = function()
 end
 
 -- -----------------------------------------------------
--- Send execution webhook.
+-- Send execution webhook (auto, no UI section).
 -- -----------------------------------------------------
 task.spawn(function()
 	task.wait(2)
