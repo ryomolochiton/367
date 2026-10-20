@@ -1,10 +1,6 @@
 -- =====================================================
--- VRT HUB — PET SIMULATOR 99 v1.7.0
--- Fix: Flag (multi-sig), Click Aura (Click+DealDamage),
---      Hide Egg (direct GUI), DM joinPets (pet uids),
---      Boost (Consumable bucket), Artifacts (skip transp),
---      Expedition (force enable), Merchant (loop buy),
---      Daycare (claim uid), Egg select dropdowns, DM farm point
+-- VRT HUB — PET SIMULATOR 99 v1.7.4
+-- Event: bỏ Leave Instance + Join Now button, thêm toggle Auto Join Now (1s)
 -- =====================================================
 
 if getgenv().VRT_LOADED then
@@ -23,6 +19,7 @@ if not game:IsLoaded() then
 	game.Loaded:Wait()
 end
 
+-- Services.
 local playersService = game:GetService("Players")
 local replicatedStorage = game:GetService("ReplicatedStorage")
 local runService = game:GetService("RunService")
@@ -51,19 +48,16 @@ AntiCheat.lastBlocked = nil
 
 local function reqCheck()
 	local issues = {}
-
 	local okInfo, info = pcall(debug.getinfo, request)
 	if okInfo and info and info.what == "Lua" then
 		table.insert(issues, "WHAT")
 	end
-
 	local okHook1, hooked1 = pcall(isfunctionhooked, request)
 	if not okHook1 then
 		table.insert(issues, "FH1_ERR")
 	elseif hooked1 then
 		table.insert(issues, "FH1_HOOKED")
 	end
-
 	if typeof(getgenv().request) == "function" then
 		local okHook2, hooked2 = pcall(isfunctionhooked, getgenv().request)
 		if not okHook2 then
@@ -72,7 +66,6 @@ local function reqCheck()
 			table.insert(issues, "FH2_HOOKED")
 		end
 	end
-
 	return #issues == 0, issues
 end
 
@@ -80,58 +73,40 @@ local function installBlunderBypass()
 	local ok, blunderMessage = pcall(function()
 		return require(replicatedStorage:WaitForChild("Blunder", 10):WaitForChild("BlunderMessage", 10))
 	end)
-
 	if not ok or typeof(blunderMessage) ~= "table" then
 		return false
 	end
-
 	if AntiCheat.originalKey then
 		return true
 	end
-
 	AntiCheat.originalKey = blunderMessage.key
-
 	local hook = function(...)
 		local args = { ... }
 		local payload = args[1]
-
 		if typeof(payload) ~= "table" then
 			return AntiCheat.originalKey(...)
 		end
-
 		local message = payload.message
 		local messageType = payload.messageType
-
 		if message == "PING" or message == "Anti Cheat fetched error in console" then
 			return AntiCheat.originalKey(...)
 		end
-
 		AntiCheat.blockedCount += 1
-		AntiCheat.lastBlocked = {
-			message = message,
-			messageType = messageType,
-			time = os.clock(),
-		}
-
+		AntiCheat.lastBlocked = { message = message, messageType = messageType, time = os.clock() }
 		if AntiCheat.logBlocked then
 			warn("[VRT AC] Blocked:", tostring(messageType), tostring(message))
 		end
-
 		return
 	end
-
 	pcall(setstackhidden, hook, true)
 	pcall(debug.setinfo, hook, "s", "[C]")
 	pcall(debug.setinfo, hook, "n", "")
-
 	pcall(setreadonly, blunderMessage, false)
 	blunderMessage.key = hook
 	pcall(setreadonly, blunderMessage, true)
-
 	AntiCheat.active = true
 	return true
 end
-
 installBlunderBypass()
 
 -- -----------------------------------------------------
@@ -149,6 +124,7 @@ local Modules = {
 	Network = safeRequire(clientFolder:FindFirstChild("Network")),
 	Save = safeRequire(clientFolder:FindFirstChild("Save")),
 	EggCmds = safeRequire(clientFolder:FindFirstChild("EggCmds")),
+	CustomEggsCmds = safeRequire(clientFolder:FindFirstChild("CustomEggsCmds")),
 	DaycareCmds = safeRequire(clientFolder:FindFirstChild("DaycareCmds")),
 	PetEquipCmds = safeRequire(clientFolder:FindFirstChild("PetEquipCmds")),
 	UltimateCmds = safeRequire(clientFolder:FindFirstChild("UltimateCmds")),
@@ -157,27 +133,33 @@ local Modules = {
 	LootboxCmds = safeRequire(clientFolder:FindFirstChild("LootboxCmds")),
 	FruitCmds = safeRequire(clientFolder:FindFirstChild("FruitCmds")),
 	RankCmds = safeRequire(clientFolder:FindFirstChild("RankCmds")),
+	RebirthCmds = safeRequire(clientFolder:FindFirstChild("RebirthCmds")),
 	FlexibleFlagCmds = safeRequire(clientFolder:FindFirstChild("FlexibleFlagCmds")),
 	PlayerPet = safeRequire(clientFolder:FindFirstChild("PlayerPet")),
 	Balancing = safeRequire(clientFolder:FindFirstChild("Balancing")),
+	NotificationCmds = safeRequire(clientFolder:FindFirstChild("NotificationCmds")),
+	InstancingCmds = safeRequire(clientFolder:FindFirstChild("InstancingCmds")),
+	InstanceZoneCmds = safeRequire(clientFolder:FindFirstChild("InstanceZoneCmds")),
+	MasteryCmds = safeRequire(clientFolder:FindFirstChild("MasteryCmds")),
+	CurrencyCmds = safeRequire(clientFolder:FindFirstChild("CurrencyCmds")),
 	WorldsUtil = safeRequire(libraryFolder:FindFirstChild("Util") and libraryFolder.Util:FindFirstChild("WorldsUtil")),
 	FlagUtil = safeRequire(libraryFolder:FindFirstChild("Util") and libraryFolder.Util:FindFirstChild("FlagUtil")),
+	ZoneUtil = safeRequire(libraryFolder:FindFirstChild("Util") and libraryFolder.Util:FindFirstChild("ZoneUtil")),
+	DaycareUtil = safeRequire(libraryFolder:FindFirstChild("Util") and libraryFolder.Util:FindFirstChild("DaycareUtil")),
 	Ranks = safeRequire(directoryFolder:FindFirstChild("Ranks")),
 	FreeGifts = safeRequire(directoryFolder:FindFirstChild("FreeGifts")),
 	EggsDir = safeRequire(directoryFolder:FindFirstChild("Eggs")),
+	ZonesDir = safeRequire(directoryFolder:FindFirstChild("Zones")),
+	PetsDir = safeRequire(directoryFolder:FindFirstChild("Pets")),
 	Items = safeRequire(libraryFolder:FindFirstChild("Items")),
 }
 
 local network = Modules.Network
 
 local function invoke(name, ...)
-	if not network or not network.Invoke then
-		return false
-	end
+	if not network or not network.Invoke then return false end
 	local ok, result = pcall(network.Invoke, name, ...)
-	if ok then
-		return true, result
-	end
+	if ok then return true, result end
 	if typeof(result) == "string" and result:find("assertion failed") then
 		return pcall(network.Invoke, network, name, ...)
 	end
@@ -185,13 +167,9 @@ local function invoke(name, ...)
 end
 
 local function fire(name, ...)
-	if not network or not network.Fire then
-		return false
-	end
+	if not network or not network.Fire then return false end
 	local ok, result = pcall(network.Fire, name, ...)
-	if ok then
-		return true, result
-	end
+	if ok then return true, result end
 	if typeof(result) == "string" and result:find("assertion failed") then
 		return pcall(network.Fire, network, name, ...)
 	end
@@ -199,13 +177,9 @@ local function fire(name, ...)
 end
 
 local function unreliable(name, ...)
-	if not network or not network.UnreliableFire then
-		return false
-	end
+	if not network or not network.UnreliableFire then return false end
 	local ok, result = pcall(network.UnreliableFire, name, ...)
-	if ok then
-		return true, result
-	end
+	if ok then return true, result end
 	if typeof(result) == "string" and result:find("assertion failed") then
 		return pcall(network.UnreliableFire, network, name, ...)
 	end
@@ -217,7 +191,7 @@ end
 -- -----------------------------------------------------
 local vrt = getgenv().VRT or {}
 getgenv().VRT = vrt
-vrt.Version = "1.7.0"
+vrt.Version = "1.7.4"
 vrt.connections = {}
 vrt.loops = {}
 
@@ -226,6 +200,7 @@ vrt.Settings = settings
 
 local defaults = {
 	ClickAuraRadius = 75,
+	ClickAuraCooldown = 0.016,
 	FastFarmCooldown = 0.2,
 	FastFarmHeartbeat = false,
 	FastFarmLoop = false,
@@ -238,6 +213,7 @@ local defaults = {
 	BuySelectedCustomEgg = false,
 	SelectedCustomEggUuid = "",
 	HideEggAnim = false,
+	HookEggAnimation = false,
 	EggNotification = true,
 	InfinitePetSpeed = false,
 	OptimizePets = false,
@@ -246,6 +222,7 @@ local defaults = {
 	PetSlots = false,
 	AutoEggSlots = false,
 	Zones = false,
+	Rebirth = false,
 	Ultimate = false,
 	FreeGifts = false,
 	RankRewards = false,
@@ -267,6 +244,12 @@ local defaults = {
 	UpgradePotions = false,
 	UpgradeEnchants = false,
 	EmpowerEnchants = false,
+	CardCombine = false,
+	FusePets = false,
+	GoldMachine = false,
+	RainbowMachine = false,
+	CoinJar = false,
+	Comet = false,
 	AutoRank = false,
 	SelectedFlag = "Coins Flag",
 	UseSelectedFlag = false,
@@ -276,6 +259,7 @@ local defaults = {
 	DMFarmPoint = nil,
 	UseDMFarmPoint = false,
 	DMAutoJoin = false,
+	DMAutoJoinForce = false,
 	AdminAbuse = false,
 	WebhookUrl = "https://discord.com/api/webhooks/1559513619719389205/7_BLXFReFLUPxroxdVlPeLKwK1t-n1DBc6LB9HKT7V1bRO4Qs1TVJ4ar6f1WItuR_nXQ",
 	WebhookEnabled = true,
@@ -306,14 +290,14 @@ local CONFIG_FOLDER = "VRT"
 local CONFIG_PATH = "VRT/PS99_Config.json"
 
 local PERSIST_KEYS = {
-	"ClickAuraRadius", "FastFarmCooldown",
+	"ClickAuraRadius", "ClickAuraCooldown", "FastFarmCooldown",
 	"FastFarmHeartbeat", "FastFarmLoop", "CollectOrbs",
 	"ClickAura", "ClickAuraViz",
 	"OpenEgg", "OpenSelectedEgg", "SelectedEggId",
 	"BuySelectedCustomEgg", "SelectedCustomEggUuid",
-	"HideEggAnim", "EggNotification",
+	"HideEggAnim", "HookEggAnimation", "EggNotification",
 	"InfinitePetSpeed", "OptimizePets", "AntiLag",
-	"Daycare", "PetSlots", "AutoEggSlots", "Zones", "Ultimate",
+	"Daycare", "PetSlots", "AutoEggSlots", "Zones", "Rebirth", "Ultimate",
 	"FreeGifts", "RankRewards",
 	"MailboxClaim", "MailboxSendHuges", "MailboxUsername", "MailboxHugeMode",
 	"Relics", "SpinWheels", "OpenChests",
@@ -322,9 +306,12 @@ local PERSIST_KEYS = {
 	"FarmTreehouse",
 	"UpgradeFruits", "UpgradeFruitsShiny",
 	"UpgradePotions", "UpgradeEnchants", "EmpowerEnchants",
+	"CardCombine", "FusePets", "GoldMachine", "RainbowMachine",
+	"CoinJar", "Comet",
 	"AutoRank",
 	"SelectedFlag", "UseSelectedFlag",
-	"DMMaxCamp", "UseFarmPoint", "UseDMFarmPoint", "DMAutoJoin", "AdminAbuse",
+	"DMMaxCamp", "UseFarmPoint", "UseDMFarmPoint",
+	"DMAutoJoin", "DMAutoJoinForce", "AdminAbuse",
 	"WebhookUrl", "WebhookEnabled",
 }
 
@@ -340,7 +327,6 @@ local function saveConfig()
 		if not isfolder(CONFIG_FOLDER) then
 			makefolder(CONFIG_FOLDER)
 		end
-
 		local out = {}
 		for _, key in ipairs(PERSIST_KEYS) do
 			local value = settings[key]
@@ -348,29 +334,21 @@ local function saveConfig()
 				out[key] = value
 			end
 		end
-
 		for _, key in ipairs(TABLE_KEYS) do
 			local value = settings[key]
 			if typeof(value) == "table" then
 				out[key] = value
 			end
 		end
-
 		writefile(CONFIG_PATH, httpService:JSONEncode(out))
 	end)
 end
 
 local function loadConfig()
-	if not isfile(CONFIG_PATH) then
-		return
-	end
-
+	if not isfile(CONFIG_PATH) then return end
 	pcall(function()
 		local decoded = httpService:JSONDecode(readfile(CONFIG_PATH))
-		if typeof(decoded) ~= "table" then
-			return
-		end
-
+		if typeof(decoded) ~= "table" then return end
 		for key, value in pairs(decoded) do
 			if defaults[key] ~= nil then
 				settings[key] = value
@@ -384,9 +362,7 @@ loadConfig()
 local saveQueued = false
 
 local function queueSave()
-	if saveQueued then
-		return
-	end
+	if saveQueued then return end
 	saveQueued = true
 	task.delay(1, function()
 		saveQueued = false
@@ -401,16 +377,9 @@ getgenv().VRT_LoadConfig = loadConfig
 -- STATIC DATA
 -- -----------------------------------------------------
 local FLAGS = {
-	"Coins Flag",
-	"Diamonds Flag",
-	"Exotic Treasure Flag",
-	"Fortune Flag",
-	"Golden Flag",
-	"Hasty Flag",
-	"Magnet Flag",
-	"Rainbow Flag",
-	"Shiny Flag",
-	"Strength Flag",
+	"Coins Flag", "Diamonds Flag", "Exotic Treasure Flag",
+	"Fortune Flag", "Golden Flag", "Hasty Flag",
+	"Magnet Flag", "Rainbow Flag", "Shiny Flag", "Strength Flag",
 }
 
 local OPTIMIZE_SIZE = Vector3.new(2.5, 2.5, 2.5)
@@ -423,25 +392,15 @@ local TREEHOUSE_ROOM = "Treehouse Merchant"
 -- SAVE CACHE + INVENTORY INDEX
 -- -----------------------------------------------------
 local SKIP_BUCKETS = { Pet = true }
-
 local SaveCache = { data = nil, timestamp = 0, ttl = 2 }
-
-local InventoryIndex = {
-	byId = {},
-	bucketIds = {},
-	timestamp = 0,
-	ttl = 5,
-	dirty = true,
-}
+local InventoryIndex = { byId = {}, bucketIds = {}, timestamp = 0, ttl = 5, dirty = true }
 
 local function getSaveCached()
 	local now = os.clock()
 	if SaveCache.data and (now - SaveCache.timestamp) < SaveCache.ttl then
 		return SaveCache.data
 	end
-	if not Modules.Save or not Modules.Save.Get then
-		return nil
-	end
+	if not Modules.Save or not Modules.Save.Get then return nil end
 	local ok, save = pcall(Modules.Save.Get)
 	if ok and typeof(save) == "table" and next(save) then
 		SaveCache.data = save
@@ -464,15 +423,11 @@ local function buildInventoryIndex()
 	if not InventoryIndex.dirty and (now - InventoryIndex.timestamp) < InventoryIndex.ttl then
 		return InventoryIndex
 	end
-
 	local save = getSaveCached()
 	if not save or typeof(save.Inventory) ~= "table" then
 		return InventoryIndex
 	end
-
-	local byId = {}
-	local bucketIds = {}
-
+	local byId, bucketIds = {}, {}
 	for bucketName, bucket in pairs(save.Inventory) do
 		if not SKIP_BUCKETS[bucketName] and typeof(bucket) == "table" then
 			local ids, seen = {}, {}
@@ -489,7 +444,6 @@ local function buildInventoryIndex()
 			bucketIds[bucketName] = ids
 		end
 	end
-
 	InventoryIndex.byId = byId
 	InventoryIndex.bucketIds = bucketIds
 	InventoryIndex.timestamp = now
@@ -498,9 +452,7 @@ local function buildInventoryIndex()
 end
 
 local function findInventoryEntry(itemId)
-	if not itemId or itemId == "" then
-		return nil
-	end
+	if not itemId or itemId == "" then return nil end
 	local index = buildInventoryIndex()
 	return index.byId[itemId]
 end
@@ -517,9 +469,7 @@ local DirectoryCache = {}
 
 local function getDirectoryIds(folderName)
 	local cached = DirectoryCache[folderName]
-	if cached then
-		return cached
-	end
+	if cached then return cached end
 	local ids = {}
 	local folder = directFolder and directFolder:FindFirstChild(folderName)
 	if folder then
@@ -564,13 +514,9 @@ local function getEggIdByNumber(eggNumber)
 end
 
 local function getEggNumberById(eggId)
-	if not eggNumberCache then
-		getEggIdByNumber(0)
-	end
+	if not eggNumberCache then getEggIdByNumber(0) end
 	for num, id in pairs(eggNumberCache or {}) do
-		if id == eggId then
-			return num
-		end
+		if id == eggId then return num end
 	end
 	return nil
 end
@@ -617,24 +563,17 @@ local function getInstanceInfo()
 end
 
 -- -----------------------------------------------------
--- Webhook (auto only)
+-- Webhook
 -- -----------------------------------------------------
 local function sendWebhook(url, payload)
-	if not url or url == "" then
-		return false
-	end
-
+	if not url or url == "" then return false end
 	local clean, issues = reqCheck()
 	if not clean then
 		warn("[VRT] Webhook bị skip, request có vấn đề:", table.concat(issues, ","))
 		return false
 	end
-
 	local ok, body = pcall(httpService.JSONEncode, httpService, payload)
-	if not ok then
-		return false
-	end
-
+	if not ok then return false end
 	return pcall(function()
 		request({
 			Url = url,
@@ -646,22 +585,17 @@ local function sendWebhook(url, payload)
 end
 
 local function sendExecutionWebhook()
-	if not settings.WebhookEnabled or settings.WebhookUrl == "" then
-		return
-	end
-
+	if not settings.WebhookEnabled or settings.WebhookUrl == "" then return end
 	local executorName, executorVersion = "Unknown", ""
 	pcall(function()
 		local a, b = identifyexecutor()
 		executorName = a or "Unknown"
 		executorVersion = b or ""
 	end)
-
 	local gameName = "Unknown"
 	pcall(function()
 		gameName = marketplaceService:GetProductInfo(game.PlaceId, Enum.InfoType.Asset).Name
 	end)
-
 	sendWebhook(settings.WebhookUrl, {
 		embeds = {
 			{
@@ -741,10 +675,8 @@ local function showEggNotification(eggName, maxHatch)
 			oldest:Destroy()
 		end
 	end
-
 	local text = ("Still Openin %s %d"):format(tostring(eggName), maxHatch)
 	local color = pickNextColor()
-
 	local label = Instance.new("TextLabel")
 	label.AnchorPoint = Vector2.new(0.5, 0.5)
 	label.Size = UDim2.new(0, 700, 0, 36)
@@ -759,14 +691,11 @@ local function showEggNotification(eggName, maxHatch)
 	label.TextTransparency = 1
 	label.ZIndex = 10
 	label.Parent = notifyGui
-
 	table.insert(activeNotifs, label)
-
 	tweenService:Create(label, TweenInfo.new(0.15, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
 		TextTransparency = 0,
 		TextStrokeTransparency = 0.4,
 	}):Play()
-
 	task.delay(2, function()
 		if not label.Parent then return end
 		local fadeOut = tweenService:Create(label, TweenInfo.new(0.4), {
@@ -787,14 +716,13 @@ local function showEggNotification(eggName, maxHatch)
 end
 
 -- -----------------------------------------------------
--- Hide Egg Anim — DIRECT GUI disable + property watch
+-- Hide Egg Anim
 -- -----------------------------------------------------
 vrt.eggGuiConnections = {}
 
 local function hideEggGuis()
 	local playerGui = localPlayer:FindFirstChild("PlayerGui")
 	if not playerGui then return end
-
 	local target = playerGui:FindFirstChild("EggOpenAnimation")
 	if target and target:IsA("ScreenGui") then
 		if target.Enabled then
@@ -808,8 +736,6 @@ local function hideEggGuis()
 			end)
 		end
 	end
-
-	-- Also hide HatchSettings / Message / LootMessage if enabled
 	for _, name in ipairs({ "HatchSettings", "LootMessage" }) do
 		local gui = playerGui:FindFirstChild(name)
 		if gui and gui:IsA("ScreenGui") and gui.Enabled then
@@ -840,33 +766,50 @@ do
 	end
 end
 
-if eggFrontend and typeof(eggFrontend.PlayEggAnimation) == "function" then
+local function installEggHook()
+	if not eggFrontend then return end
 	if getgenv().VRT_ORIGINAL_PLAY_EGG then
 		pcall(function()
 			eggFrontend.PlayEggAnimation = getgenv().VRT_ORIGINAL_PLAY_EGG
 		end)
+	else
+		getgenv().VRT_ORIGINAL_PLAY_EGG = eggFrontend.PlayEggAnimation
 	end
-
-	getgenv().VRT_ORIGINAL_PLAY_EGG = eggFrontend.PlayEggAnimation
-	vrt.originalPlayEgg = eggFrontend.PlayEggAnimation
-
-	local eggHook = function(eggName, ...)
-		if settings.EggNotification then
-			pcall(showEggNotification, eggName, getMaxHatch())
+	local originalPlayEgg = getgenv().VRT_ORIGINAL_PLAY_EGG
+	vrt.originalPlayEgg = originalPlayEgg
+	local hook
+	if settings.HookEggAnimation then
+		hook = function(eggName, ...)
+			local cmds = Modules.NotificationCmds
+			if cmds and typeof(cmds.Message) == "table" and typeof(cmds.Message.Bottom) == "function" then
+				local maxHatch = getMaxHatch()
+				local color = COLOR_PALETTE[math.random(1, #COLOR_PALETTE)]
+				pcall(cmds.Message.Bottom, cmds.Message, {
+					Message = ("Still Openin %s %d"):format(tostring(eggName), maxHatch),
+					Color = color,
+				})
+			end
+			return
 		end
-
-		if settings.HideEggAnim then
-			pcall(hideEggGuis)
+	else
+		hook = function(eggName, ...)
+			if settings.EggNotification then
+				pcall(showEggNotification, eggName, getMaxHatch())
+			end
+			if settings.HideEggAnim then
+				pcall(hideEggGuis)
+			end
+			local ok, result = pcall(originalPlayEgg, eggName, ...)
+			if ok then return result end
+			return
 		end
-
-		local ok, result = pcall(vrt.originalPlayEgg, eggName, ...)
-		if ok then return result end
-		return
 	end
-
-	pcall(setstackhidden, eggHook, true)
-	eggFrontend.PlayEggAnimation = eggHook
+	pcall(setstackhidden, hook, true)
+	pcall(debug.setinfo, hook, "s", "[C]")
+	eggFrontend.PlayEggAnimation = hook
 end
+
+installEggHook()
 
 -- -----------------------------------------------------
 -- Helpers.
@@ -881,16 +824,7 @@ local function getBreakableFolder()
 	return things and things:FindFirstChild("Breakables") or nil
 end
 
--- -----------------------------------------------------
--- PET UID CACHE
--- -----------------------------------------------------
-local PetsCache = { data = nil, timestamp = 0, ttl = 1 }
-
 local function getOwnedPetUids()
-	local now = os.clock()
-	if PetsCache.data and (now - PetsCache.timestamp) < PetsCache.ttl then
-		return PetsCache.data
-	end
 	local uids = {}
 	if Modules.PlayerPet and Modules.PlayerPet.GetAll then
 		local ok, pets = pcall(Modules.PlayerPet.GetAll)
@@ -898,15 +832,11 @@ local function getOwnedPetUids()
 			for _, pet in pairs(pets) do
 				if typeof(pet) == "table" and pet.owner == localPlayer then
 					local uid = pet.euid or pet.uid
-					if uid then
-						table.insert(uids, uid)
-					end
+					if uid then table.insert(uids, uid) end
 				end
 			end
 		end
 	end
-	PetsCache.data = uids
-	PetsCache.timestamp = now
 	return uids
 end
 
@@ -1161,7 +1091,6 @@ end
 task.spawn(function()
 	if getgenv().VRT_AntiAFK then return end
 	getgenv().VRT_AntiAFK = true
-
 	local function kill(signal)
 		local ok, conns = pcall(getconnections, signal)
 		if not ok or typeof(conns) ~= "table" then return end
@@ -1175,11 +1104,9 @@ task.spawn(function()
 			end)
 		end
 	end
-
 	kill(localPlayer.Idled)
 	kill(userInputService.WindowFocusReleased)
 	kill(userInputService.WindowFocused)
-
 	task.spawn(function()
 		local scripts = localPlayer:WaitForChild("PlayerScripts", 10)
 		local scriptsFolder = scripts and scripts:WaitForChild("Scripts", 10)
@@ -1189,12 +1116,9 @@ task.spawn(function()
 			pcall(function() idleScript.Enabled = false end)
 		end
 	end)
-
 	fire("Idle Tracking: Stop Timer")
-
 	local ok, virtualUser = pcall(game.GetService, game, "VirtualUser")
 	if not ok then return end
-
 	while getgenv().VRT_LOADED do
 		pcall(function()
 			virtualUser:Button2Up(Vector2.new(0, 0))
@@ -1216,7 +1140,6 @@ local petDataBuffer = {}
 Core.FastFarm = function()
 	local root = getRoot()
 	if not root then return end
-
 	if settings.UseFarmPoint and typeof(settings.FarmPoint) == "table" then
 		local fp = settings.FarmPoint
 		if fp.x and fp.y and fp.z then
@@ -1227,11 +1150,9 @@ Core.FastFarm = function()
 			end
 		end
 	end
-
 	local rootPos = root.Position
 	local zone = getCurrentZone()
 	local breakables = getBreakablePositions()
-
 	table.clear(closestBuffer)
 	for _, item in ipairs(breakables) do
 		if item.parentId == nil or item.parentId == zone then
@@ -1242,15 +1163,12 @@ Core.FastFarm = function()
 	end
 	local breakableCount = #closestBuffer
 	if breakableCount == 0 then return end
-
 	local uids = getOwnedPetUids()
 	if #uids == 0 then return end
-
 	table.clear(petDataBuffer)
 	for _, uid in ipairs(uids) do
 		petDataBuffer[uid] = closestBuffer[math.random(1, breakableCount)]
 	end
-
 	fire("Breakables_JoinPetBulk", petDataBuffer)
 end
 
@@ -1267,29 +1185,35 @@ Core.CollectOrbs = function()
 	end
 end
 
--- FIX: fire BOTH Click (position/direction) AND Breakables_PlayerDealDamage
+local clickAuraCache = { names = {}, rootPos = nil, timestamp = 0, ttl = 0.08 }
+
 Core.ClickAura = function()
 	local root = getRoot()
 	if not root then return end
 	local rootPos = root.Position
 	local radius = settings.ClickAuraRadius
-	local breakables = getBreakablePositions()
-	local hit = 0
-	for _, item in ipairs(breakables) do
-		local d = (item.position - rootPos).Magnitude
-		if d <= radius then
-			local direction = item.position - rootPos
-			if direction.Magnitude < 0.01 then
-				direction = Vector3.new(0, -1, 0)
+	local radiusSq = radius * radius
+	local now = os.clock()
+	local cache = clickAuraCache
+	local stale = (now - cache.timestamp) > cache.ttl
+	local movedFar = cache.rootPos and (cache.rootPos - rootPos).Magnitude > 8
+	if stale or movedFar then
+		local breakables = getBreakablePositions()
+		local names = {}
+		for _, item in ipairs(breakables) do
+			local dx = item.position.X - rootPos.X
+			local dy = item.position.Y - rootPos.Y
+			local dz = item.position.Z - rootPos.Z
+			if dx * dx + dy * dy + dz * dz <= radiusSq then
+				names[#names + 1] = item.name
 			end
-			fire("Click", item.position, direction.Unit)
-			unreliable("Breakables_PlayerDealDamage", item.name)
-			hit += 1
 		end
+		cache.names = names
+		cache.rootPos = rootPos
+		cache.timestamp = now
 	end
-	if hit > 0 and not vrt.clickAuraDebug then
-		vrt.clickAuraDebug = true
-		print(("[VRT] Click Aura hit %d breakables"):format(hit))
+	for _, name in ipairs(cache.names) do
+		unreliable("Breakables_PlayerDealDamage", name)
 	end
 end
 
@@ -1319,48 +1243,51 @@ Core.ClickAuraViz = function()
 	viz.CFrame = CFrame.new(root.Position) * VIZ_ROTATION
 end
 
-local function tryOpenEgg(eggId, eggNumber)
-	local maxHatch = getMaxHatch()
-	local combos = {
-		{ eggId, maxHatch },
-		{ eggId },
-		{ eggNumber, maxHatch },
-		{ eggNumber },
-	}
-	for _, args in ipairs(combos) do
-		local ok = invoke("Eggs_RequestPurchase", table.unpack(args))
-		if ok then return true end
-	end
-	for _, args in ipairs(combos) do
-		local ok = fire("Eggs_RequestPurchase", table.unpack(args))
-		if ok then return true end
-	end
-	return false
-end
-
+-- Egg: compare custom vs normal distance
 Core.OpenEgg = function()
 	local root = getRoot()
 	if not root then return end
 	local rootPos = root.Position
+
+	local things = workspace:FindFirstChild("__THINGS")
+	if not things then return end
+
+	local customEgg, customDist = nil, math.huge
+	local customFolder = things:FindFirstChild("CustomEggs")
+	if customFolder then
+		for _, model in ipairs(customFolder:GetChildren()) do
+			if model:IsA("Model") then
+				local ok, pivot = pcall(function() return model.WorldPivot end)
+				if ok and pivot then
+					local d = (pivot.Position - rootPos).Magnitude
+					if d < customDist then
+						customEgg, customDist = model, d
+					end
+				end
+			end
+		end
+	end
+
+	local normalEgg, normalDist = nil, math.huge
 	local eggs = getEggPositions()
-	if #eggs == 0 then return end
-	local closest, closestDistance = nil, math.huge
 	for _, egg in ipairs(eggs) do
-		local distance = (egg.position - rootPos).Magnitude
-		if distance < closestDistance then
-			closest, closestDistance = egg, distance
+		local d = (egg.position - rootPos).Magnitude
+		if d < normalDist then
+			normalEgg, normalDist = egg, d
 		end
 	end
-	if not closest then return end
-	local eggId = getEggIdByNumber(closest.eggNumber)
-	if not eggId then
-		if not settings.eggUnmappedWarned[closest.eggNumber] then
-			settings.eggUnmappedWarned[closest.eggNumber] = true
-			warn(("[VRT] Egg %d không có trong Directory.Eggs"):format(closest.eggNumber))
-		end
-		return
+
+	if not customEgg and not normalEgg then return end
+
+	local maxHatch = getMaxHatch()
+
+	if customEgg and customDist <= normalDist then
+		invoke("CustomEggs_Hatch", customEgg.Name)
+	elseif normalEgg then
+		local eggId = getEggIdByNumber(normalEgg.eggNumber)
+		if not eggId then return end
+		invoke("Eggs_RequestPurchase", eggId, maxHatch)
 	end
-	tryOpenEgg(eggId, closest.eggNumber)
 end
 
 Core.OpenSelectedEgg = function()
@@ -1383,9 +1310,7 @@ Core.OpenSelectedEgg = function()
 		for _, model in ipairs(container:GetChildren()) do
 			if model:IsA("Model") then
 				local num = tonumber(model.Name:match("^(%d+)"))
-				if num == eggNumber then
-					return model
-				end
+				if num == eggNumber then return model end
 			end
 		end
 		return nil
@@ -1412,7 +1337,7 @@ Core.OpenSelectedEgg = function()
 		task.wait(0.2)
 	end
 
-	tryOpenEgg(eggId, eggNumber)
+	invoke("Eggs_RequestPurchase", eggId, getMaxHatch())
 end
 
 Core.BuySelectedCustomEgg = function()
@@ -1510,35 +1435,23 @@ Core.AntiLag = function()
 	return removed
 end
 
--- Daycare: claim each active uid, then enroll
 Core.Daycare = function()
 	local daycare = Modules.DaycareCmds
 	if not daycare then return end
-
 	local save = getSaveCached()
-
-	-- Claim each active pet
 	if save and typeof(save.DaycareActive) == "table" and daycare.Claim then
-		local claimed = 0
-		for uid, entry in pairs(save.DaycareActive) do
-			if typeof(entry) == "table" then
-				local ok = pcall(daycare.Claim, uid)
-				if ok then
-					claimed += 1
+		for uid in pairs(save.DaycareActive) do
+			local ok, pet = pcall(daycare.Claim, uid)
+			if ok and pet then
+				if not vrt.daycareDebug then
+					vrt.daycareDebug = true
+					print(("[VRT] Daycare: claimed %s"):format(tostring(uid)))
 				end
+				invalidateSaveCache()
+				return
 			end
-		end
-		if claimed > 0 then
-			if not vrt.daycareDebug then
-				vrt.daycareDebug = true
-				print(("[VRT] Daycare: claimed %d pets"):format(claimed))
-			end
-			invalidateSaveCache()
-			return
 		end
 	end
-
-	-- Enroll
 	if not daycare.GetMaxSlots or not daycare.GetUsedSlots then return end
 	local okMax, maxSlots = pcall(daycare.GetMaxSlots)
 	local okUsed, usedSlots = pcall(daycare.GetUsedSlots)
@@ -1599,7 +1512,6 @@ Core.BuyEggSlots = function()
 	local rankCmds = Modules.RankCmds
 	if not rankCmds or not rankCmds.GetEggBundle then return end
 	local purchased = save.EggSlotsPurchased or 0
-
 	if not eggBundleCache then
 		eggBundleCache = {}
 		for index = 1, 200 do
@@ -1611,7 +1523,6 @@ Core.BuyEggSlots = function()
 			if bundleEnd > 1000 then break end
 		end
 	end
-
 	for _, bundle in ipairs(eggBundleCache) do
 		if bundle.prevEnd == purchased then
 			invoke("EggHatchSlotsMachine_RequestPurchase", bundle.bundleEnd)
@@ -1636,17 +1547,14 @@ Core.GetFlagMaxAmount = function(flagId)
 	return math.min(owned, gameMax)
 end
 
--- FIX: try many signatures for Consume
 Core.ActivateFlag = function()
 	local flagId = settings.SelectedFlag
 	if not flagId or flagId == "" then return end
-
 	local flagCmds = Modules.FlexibleFlagCmds
 	if flagCmds and flagCmds.GetActiveFlag then
 		local ok, active = pcall(flagCmds.GetActiveFlag)
 		if ok and active then return end
 	end
-
 	local amount = Core.GetFlagMaxAmount(flagId)
 	if amount <= 0 then
 		if not vrt.flagWarned then vrt.flagWarned = {} end
@@ -1656,14 +1564,16 @@ Core.ActivateFlag = function()
 		end
 		return
 	end
-
 	local info = getInstanceInfo()
 	local instanceId = info and info.InstanceId or nil
 	local areaId = info and info.AreaId or nil
-	local zoneNumber = info and info.ZoneNumber or nil
-
-	local entry = findInventoryEntry(flagId)
-
+	if not instanceId or not areaId then
+		if not vrt.flagInfoWarned then
+			vrt.flagInfoWarned = true
+			warn("[VRT] Flag: không lấy được InstanceId/AreaId")
+		end
+		return
+	end
 	if not vrt.flagDebug then vrt.flagDebug = {} end
 	if not vrt.flagDebug[flagId] then
 		vrt.flagDebug[flagId] = true
@@ -1671,55 +1581,34 @@ Core.ActivateFlag = function()
 			flagId, amount, tostring(instanceId), tostring(areaId)
 		))
 	end
-
-	-- Try all plausible signatures
-	local signatures = {
-		{ flagId, amount, instanceId, areaId },
-		{ flagId, amount, areaId, zoneNumber },
-		{ flagId, amount, areaId },
-		{ flagId, amount, instanceId },
-		{ flagId, amount, zoneNumber },
-		{ flagId, amount },
-	}
-	if entry then
-		table.insert(signatures, { entry, amount })
-		table.insert(signatures, { entry, amount, areaId })
-	end
-
 	if flagCmds and flagCmds.Consume then
-		for _, args in ipairs(signatures) do
-			local ok = pcall(flagCmds.Consume, table.unpack(args))
-			if ok then
-				invalidateSaveCache()
-				return
-			end
-		end
-		-- Colon syntax
-		for _, args in ipairs(signatures) do
-			local ok = pcall(function()
-				return flagCmds:Consume(table.unpack(args))
-			end)
-			if ok then
-				invalidateSaveCache()
-				return
-			end
-		end
-	end
-
-	-- Remote fallback
-	for _, args in ipairs(signatures) do
-		local ok = invoke("FlexibleFlags_Consume", table.unpack(args))
+		local ok = pcall(flagCmds.Consume, flagId, amount, instanceId, areaId)
 		if ok then
 			invalidateSaveCache()
 			return
 		end
 	end
-
+	local ok = invoke("FlexibleFlags_Consume", flagId, amount, instanceId, areaId)
+	if ok then
+		invalidateSaveCache()
+		return
+	end
 	invoke("Flags: Consume", flagId, amount)
 	invalidateSaveCache()
 end
 
 Core.BuyZone = function()
+	local zoneUtil = Modules.ZoneUtil
+	if zoneUtil and zoneUtil.GetMaxOwnedZone and zoneUtil.GetZoneFromNumber then
+		local okMax, maxOwned = pcall(zoneUtil.GetMaxOwnedZone)
+		if okMax and typeof(maxOwned) == "number" then
+			local okZone, nextZone = pcall(zoneUtil.GetZoneFromNumber, maxOwned + 1)
+			if okZone and typeof(nextZone) == "table" and nextZone.ZoneNumber then
+				invoke("Zones_RequestPurchase", nextZone.ZoneNumber)
+				return
+			end
+		end
+	end
 	if Modules.ZoneCmds and Modules.ZoneCmds.GetNextZone then
 		local ok, nextZone = pcall(Modules.ZoneCmds.GetNextZone)
 		if ok and typeof(nextZone) == "table" and nextZone.ZoneNumber then
@@ -1736,6 +1625,18 @@ Core.BuyZone = function()
 		end
 	end
 	invoke("Zones_RequestPurchase", highest + 1)
+end
+
+Core.Rebirth = function()
+	local rebirthCmds = Modules.RebirthCmds
+	if not rebirthCmds then return end
+	if rebirthCmds.CanRebirth then
+		local ok, can = pcall(rebirthCmds.CanRebirth)
+		if not ok or not can then return end
+	end
+	if rebirthCmds.Rebirth then
+		pcall(rebirthCmds.Rebirth)
+	end
 end
 
 Core.UseUltimate = function()
@@ -1935,7 +1836,6 @@ Core.ConsumeFruits = function()
 	if not fruitCmds or not fruitCmds.Consume then return end
 	local fruits = getBucketIds("Fruit")
 	local wanted = resolveSelection(settings.SelectedFruits, fruits)
-
 	local queueLimit = 50
 	if fruitCmds.ComputeFruitQueueLimit then
 		local ok, limit = pcall(fruitCmds.ComputeFruitQueueLimit)
@@ -1943,7 +1843,6 @@ Core.ConsumeFruits = function()
 			queueLimit = limit
 		end
 	end
-
 	local activeFruits = {}
 	if fruitCmds.GetActiveFruits then
 		local ok, active = pcall(fruitCmds.GetActiveFruits)
@@ -1951,7 +1850,6 @@ Core.ConsumeFruits = function()
 			activeFruits = active
 		end
 	end
-
 	local sorted = {}
 	for uid, entry in pairs(save.Inventory.Fruit) do
 		if typeof(entry) == "table" and entry.id and (entry._am or 0) > 0 then
@@ -1961,7 +1859,6 @@ Core.ConsumeFruits = function()
 		end
 	end
 	table.sort(sorted, function(a, b) return a.amount > b.amount end)
-
 	for _, item in ipairs(sorted) do
 		local fruitId = item.entry.id
 		local stackKey = item.entry.sh == true and "Shiny" or "Normal"
@@ -2119,6 +2016,122 @@ Core.ScrapEnchants = function()
 	end
 end
 
+Core.CombineCards = function()
+	local save = getSaveCached()
+	if not save or typeof(save.Inventory) ~= "table" or not save.Inventory.Card then
+		return
+	end
+	local payload = {}
+	for uid, entry in pairs(save.Inventory.Card) do
+		if typeof(entry) == "table" and entry._am and entry._am >= 3 then
+			payload[uid] = entry._am // 3
+		end
+	end
+	if not next(payload) then return end
+	invoke("CardCombinationMachine_ActivateBulk", payload)
+	invalidateSaveCache()
+end
+
+Core.FusePets = function()
+	local save = getSaveCached()
+	if not save or typeof(save.Inventory) ~= "table" or not save.Inventory.Pet then
+		return
+	end
+	local items = Modules.Items
+	if not items or not items.Pet or not items.Pet.From then return end
+	local uids = {}
+	for uid, entry in pairs(save.Inventory.Pet) do
+		if typeof(entry) == "table" then
+			local ok, instance = pcall(items.Pet.From, items.Pet, entry)
+			if ok and instance then
+				local isRainbow = instance.IsRainbow and instance:IsRainbow()
+				local isGolden = instance.IsGolden and instance:IsGolden()
+				local isShiny = instance.IsShiny and instance:IsShiny()
+				if isRainbow or isGolden or isShiny then
+					table.insert(uids, uid)
+				end
+			end
+		end
+	end
+	if #uids < 5 then return end
+	local payload = {}
+	for i = 1, math.min(#uids, 5) do
+		payload[uids[i]] = 1
+	end
+	invoke("FuseMachine_Activate", payload)
+	invalidateSaveCache()
+end
+
+Core.GoldMachine = function()
+	local save = getSaveCached()
+	if not save or typeof(save.Inventory) ~= "table" or not save.Inventory.Pet then
+		return
+	end
+	local items = Modules.Items
+	if not items or not items.Pet or not items.Pet.From then return end
+	local normals = {}
+	for uid, entry in pairs(save.Inventory.Pet) do
+		if typeof(entry) == "table" then
+			local ok, instance = pcall(items.Pet.From, items.Pet, entry)
+			if ok and instance then
+				local isGolden = instance.IsGolden and instance:IsGolden()
+				local isRainbow = instance.IsRainbow and instance:IsRainbow()
+				if not isGolden and not isRainbow then
+					table.insert(normals, uid)
+				end
+			end
+		end
+	end
+	if #normals < 5 then return end
+	local payload = {}
+	for i = 1, math.min(#normals, 5) do
+		payload[normals[i]] = 1
+	end
+	invoke("GoldMachine_Activate", payload)
+	invalidateSaveCache()
+end
+
+Core.RainbowMachine = function()
+	local save = getSaveCached()
+	if not save or typeof(save.Inventory) ~= "table" or not save.Inventory.Pet then
+		return
+	end
+	local items = Modules.Items
+	if not items or not items.Pet or not items.Pet.From then return end
+	local goldens = {}
+	for uid, entry in pairs(save.Inventory.Pet) do
+		if typeof(entry) == "table" then
+			local ok, instance = pcall(items.Pet.From, items.Pet, entry)
+			if ok and instance then
+				local isGolden = instance.IsGolden and instance:IsGolden()
+				local isRainbow = instance.IsRainbow and instance:IsRainbow()
+				if isGolden and not isRainbow then
+					table.insert(goldens, uid)
+				end
+			end
+		end
+	end
+	if #goldens < 5 then return end
+	local payload = {}
+	for i = 1, math.min(#goldens, 5) do
+		payload[goldens[i]] = 1
+	end
+	invoke("RainbowMachine_Activate", payload)
+	invalidateSaveCache()
+end
+
+Core.CoinJar = function()
+	local entry = findInventoryEntry("Basic Coin Jar")
+	if not entry or (entry._am or 0) <= 0 then return end
+	invoke("CoinJar_Spawn")
+end
+
+Core.Comet = function()
+	local entry = findInventoryEntry("Comet")
+	if not entry or (entry._am or 0) <= 0 then return end
+	invoke("Comet_Spawn")
+end
+
 -- -----------------------------------------------------
 -- Loop manager
 -- -----------------------------------------------------
@@ -2177,7 +2190,6 @@ local DiamondMountain = (function()
 	local playersService = game:GetService("Players")
 	local workspaceService = game:GetService("Workspace")
 	local replicatedStorage = game:GetService("ReplicatedStorage")
-
 	local localPlayer = playersService.LocalPlayer
 
 	local INSTANCE_ID = "DiamondMountain"
@@ -2197,12 +2209,10 @@ local DiamondMountain = (function()
 	local FARM_RADIUS = 250
 	local CAMP_RADIUS = 150
 	local FARM_TELEPORT_MIN = 6
-
 	local DEFAULT_INTERVAL = 0.2
 	local BOOST_COOLDOWN = 4
 	local BOOST_QUANTITY = 1
 	local UUID_LENGTH = 32
-
 	local ROOT_CACHE_TTL = 0.3
 	local WORLD_CACHE_TTL = 1
 	local CATEGORY_CACHE_TTL = 2
@@ -2216,28 +2226,21 @@ local DiamondMountain = (function()
 	local OPTIMIZE_CHUNK = 400
 	local INVENTORY_OPEN_COOLDOWN = 5
 	local EXPAND_COOLDOWN = 5
-
 	local CAMP_UNREACHABLE_TTL = 30
 	local TELEPORT_TIMEOUT = 3
 	local MAX_CAMP = 6
-
 	local BOOST_CATEGORIES = { "CATEGORY_Diamond Mountain", "CATEGORY_Boosts" }
-
 	local BOOST_NAME_FIELDS = { "Id", "Name", "ItemId", "ItemName", "Type", "Category" }
 	local BOOST_COUNT_FIELDS = { "Quantity", "Amount", "Count", "Qty" }
 
 	local REMOTE_NAMES = {
-		click = "Click",
-		dealDamage = "Breakables_PlayerDealDamage",
-		joinPetBulk = "Breakables_JoinPetBulk",
-		hatchEgg = "CustomEggs_Hatch",
-		merchantPurchase = "Merchant_RequestPurchase",
-		machineScreens = "MachineScreens_Get",
+		click = "Click", dealDamage = "Breakables_PlayerDealDamage",
+		joinPetBulk = "Breakables_JoinPetBulk", hatchEgg = "CustomEggs_Hatch",
+		merchantPurchase = "Merchant_RequestPurchase", machineScreens = "MachineScreens_Get",
 		teleportInstance = "Teleports_RequestInstanceTeleport",
 		joinInstance = "Instancing_InvokeCustomFromClient",
 		purchaseUpgrade = "EventUpgrades: Purchase",
-		consumeItem = "Consumables_Consume",
-		inventoryOpened = "Inventory_Opened",
+		consumeItem = "Consumables_Consume", inventoryOpened = "Inventory_Opened",
 	}
 
 	local NAME_TO_KEY = {}
@@ -2256,9 +2259,7 @@ local DiamondMountain = (function()
 	end
 
 	local function isUuid(value)
-		return type(value) == "string"
-			and #value == UUID_LENGTH
-			and value:match("^%x+$") ~= nil
+		return type(value) == "string" and #value == UUID_LENGTH and value:match("^%x+$") ~= nil
 	end
 
 	local function distanceSq(a, b)
@@ -2285,19 +2286,11 @@ local DiamondMountain = (function()
 
 	local FeatureDefinitions = {
 		{
-			id = "autoFarm",
-			name = "Auto Farm",
-			interval = 1.2,
+			id = "autoFarm", name = "Auto Farm", interval = 1.2,
 			run = function(self)
 				local root = self:getRoot()
 				if not root then return "no character" end
-
-				if not self:getMountain() then
-					self:joinEvent()
-					return "joining instance"
-				end
-
-				-- DM farm point
+				if not self:getMountain() then self:joinEvent(); return "joining instance" end
 				if self.dmFarmPoint then
 					local fp = self.dmFarmPoint
 					local targetPos = Vector3.new(fp.x, fp.y, fp.z)
@@ -2306,7 +2299,6 @@ local DiamondMountain = (function()
 						return "teleport dm farm point"
 					end
 				end
-
 				if self.pendingCamp then
 					local anchor = self:getCampAnchor(self.pendingCamp)
 					if anchor and distanceSq(root.Position, anchor) < CAMP_RADIUS * CAMP_RADIUS then
@@ -2321,7 +2313,6 @@ local DiamondMountain = (function()
 						return "teleporting camp " .. self.pendingCamp
 					end
 				end
-
 				local target = self:nearestBreakable(root.Position, FARM_RADIUS)
 				if target then
 					if distanceSq(target.part.Position, root.Position) > FARM_TELEPORT_MIN * FARM_TELEPORT_MIN then
@@ -2331,14 +2322,9 @@ local DiamondMountain = (function()
 					self:joinPets(target.id)
 					return string.format("farming %s @%d", target.id, self.farmCamp or 0)
 				end
-
-				if not self.network.teleportInstance then
-					return "no teleport remote"
-				end
-
+				if not self.network.teleportInstance then return "no teleport remote" end
 				local campIndex = self:nextFarmCamp()
 				if not campIndex then return "no camp reachable" end
-
 				pcall(function()
 					self.network.teleportInstance:InvokeServer(string.format("__Zone_%d", campIndex))
 				end)
@@ -2348,17 +2334,11 @@ local DiamondMountain = (function()
 			end,
 		},
 		{
-			id = "autoFarmBest",
-			name = "Auto Farm Best (highest camp)",
-			interval = 1.5,
+			id = "autoFarmBest", name = "Auto Farm Best (highest camp)", interval = 1.5,
 			run = function(self)
 				local root = self:getRoot()
 				if not root then return "no character" end
-				if not self:getMountain() then
-					self:joinEvent()
-					return "joining instance"
-				end
-
+				if not self:getMountain() then self:joinEvent(); return "joining instance" end
 				local highest = self:getHighestOpenCamp()
 				local anchor = self:getCampAnchor(highest)
 				if anchor and distanceSq(root.Position, anchor) > CAMP_RADIUS * CAMP_RADIUS then
@@ -2369,7 +2349,6 @@ local DiamondMountain = (function()
 						return "teleport best camp " .. highest
 					end
 				end
-
 				local target = self:nearestBreakable(root.Position, FARM_RADIUS)
 				if target then
 					self:hitBreakable(target)
@@ -2380,9 +2359,7 @@ local DiamondMountain = (function()
 			end,
 		},
 		{
-			id = "breakTrail",
-			name = "Break Trail Chests",
-			interval = 0.2,
+			id = "breakTrail", name = "Break Trail Chests", interval = 0.2,
 			run = function(self)
 				local root = self:getRoot()
 				if not root then return "no character" end
@@ -2394,9 +2371,7 @@ local DiamondMountain = (function()
 			end,
 		},
 		{
-			id = "fightYeti",
-			name = "Fight The Yeti",
-			interval = 0.2,
+			id = "fightYeti", name = "Fight The Yeti", interval = 0.2,
 			run = function(self)
 				local spot = self:getYetiSpot()
 				if not spot then return "no arena" end
@@ -2408,24 +2383,18 @@ local DiamondMountain = (function()
 			end,
 		},
 		{
-			id = "feedYeti",
-			name = "Feed The Yeti",
-			interval = 0.4,
+			id = "feedYeti", name = "Feed The Yeti", interval = 0.4,
 			run = function(self)
 				local spot = self:getYetiSpot()
 				if not spot then return "no arena" end
 				local target = self:nearestBreakable(spot, YETI_RADIUS)
 				if not target then return "no yeti" end
-				if self:joinPets(target.id) then
-					return "feeding " .. target.id
-				end
+				if self:joinPets(target.id) then return "feeding " .. target.id end
 				return "no pets"
 			end,
 		},
 		{
-			id = "fillWalls",
-			name = "Fill Rubble Walls",
-			interval = 0.5,
+			id = "fillWalls", name = "Fill Rubble Walls", interval = 0.5,
 			run = function(self)
 				local camps = self:getCampList()
 				if #camps == 0 then return "no camps" end
@@ -2435,18 +2404,14 @@ local DiamondMountain = (function()
 					local blocker = wall and wall:FindFirstChild("Blocker")
 					if blocker and blocker:IsA("BasePart") then
 						local target = self:nearestBreakable(blocker.Position, WALL_RADIUS)
-						if target and self:joinPets(target.id) then
-							filled += 1
-						end
+						if target and self:joinPets(target.id) then filled += 1 end
 					end
 				end
 				return filled > 0 and string.format("filled %d", filled) or "no pets"
 			end,
 		},
 		{
-			id = "buyEgg",
-			name = "Buy Mountain Egg",
-			interval = 0.6,
+			id = "buyEgg", name = "Buy Mountain Egg", interval = 0.6,
 			run = function(self)
 				if not self.network.hatchEgg then return "no hatch remote" end
 				local root = self:getRoot()
@@ -2454,9 +2419,7 @@ local DiamondMountain = (function()
 				local best, bestDistance
 				for _, egg in ipairs(self:getMountainEggs()) do
 					local d = distanceSq(egg.part.Position, root.Position)
-					if not bestDistance or d < bestDistance then
-						best, bestDistance = egg, d
-					end
+					if not bestDistance or d < bestDistance then best, bestDistance = egg, d end
 				end
 				if not best then return "no mountain egg" end
 				local hatchEgg = self.network.hatchEgg
@@ -2465,9 +2428,7 @@ local DiamondMountain = (function()
 			end,
 		},
 		{
-			id = "buySelectedEgg",
-			name = "Buy Selected Custom Egg",
-			interval = 0.6,
+			id = "buySelectedEgg", name = "Buy Selected Custom Egg", interval = 0.6,
 			run = function(self)
 				if not self.network.hatchEgg then return "no hatch remote" end
 				local uuid = self.selectedEggUuid
@@ -2483,15 +2444,12 @@ local DiamondMountain = (function()
 			end,
 		},
 		{
-			id = "merchant",
-			name = "Buy From Traveling Merchant",
-			interval = 3,
+			id = "merchant", name = "Buy From Traveling Merchant", interval = 3,
 			run = function(self)
 				local purchase = self.network.merchantPurchase
 				if not purchase then return "no merchant remote" end
 				local root = self:getRoot()
 				if not root then return "no character" end
-
 				local camps = self:getCamps()
 				if not camps then return "no camps" end
 				local highest = self:getHighestOpenCamp()
@@ -2500,50 +2458,35 @@ local DiamondMountain = (function()
 				if not merchantPart or not merchantPart:IsA("BasePart") then
 					return "no merchant @camp " .. highest
 				end
-
 				local originalCFrame = root.CFrame
 				root.CFrame = CFrame.new(merchantPart.Position + Vector3.new(0, 5, 0))
 				task.wait(0.4)
-
 				local screens = self.network.machineScreens
 				if screens then
 					pcall(screens.FireServer, screens, "Merchant")
 					task.wait(0.3)
 				end
-
 				local bought = 0
 				for index = 1, 10 do
 					local ok = pcall(purchase.InvokeServer, purchase, MERCHANT_ID, index)
-					if ok then
-						bought += 1
-						task.wait(0.1)
-					end
+					if ok then bought += 1; task.wait(0.1) end
 				end
-
 				pcall(function() root.CFrame = originalCFrame end)
 				return bought > 0 and ("bought " .. bought .. " @camp " .. highest) or "purchase failed"
 			end,
 		},
 		{
-			id = "sendExpedition",
-			name = "Send Pets On Expeditions",
-			interval = 2,
+			id = "sendExpedition", name = "Send Pets On Expeditions", interval = 2,
 			run = function(self)
 				local screens = self.network.machineScreens
-				if screens then
-					pcall(screens.FireServer, screens, EXPEDITION_MACHINE)
-				end
+				if screens then pcall(screens.FireServer, screens, EXPEDITION_MACHINE) end
 				task.wait(0.3)
-
 				local prompts = self:getExpeditionPrompts(true)
 				if #prompts == 0 then return "no expedition" end
-
 				local fired = 0
 				for _, prompt in ipairs(prompts) do
 					if prompt.Parent then
-						if not prompt.Enabled then
-							pcall(function() prompt.Enabled = true end)
-						end
+						if not prompt.Enabled then pcall(function() prompt.Enabled = true end) end
 						pcall(fireproximityprompt, prompt)
 						fired += 1
 					end
@@ -2552,20 +2495,15 @@ local DiamondMountain = (function()
 			end,
 		},
 		{
-			id = "claimExpedition",
-			name = "Claim Expeditions",
-			interval = 2,
+			id = "claimExpedition", name = "Claim Expeditions", interval = 2,
 			run = function(self)
 				local mountain = self:getMountain()
 				local summit = mountain and mountain:FindFirstChild("Summit")
 				local expedition = summit and summit:FindFirstChild("Expedition")
 				local claim = expedition and expedition:FindFirstChild("ClaimPillar")
 				if not claim then return "no claim pillar" end
-
 				local root = self:getRoot()
 				if not root then return "no character" end
-
-				-- Teleport to claim pillar
 				local anchor = claim:FindFirstChild("BillboardAnchor")
 				if anchor and anchor:IsA("BasePart") then
 					if distanceSq(root.Position, anchor.Position) > 400 then
@@ -2573,52 +2511,38 @@ local DiamondMountain = (function()
 						return "teleport claim"
 					end
 				end
-
-				-- Try to find any prompt/button in claim
 				local fired = 0
 				for _, d in ipairs(claim:GetDescendants()) do
 					if d:IsA("ProximityPrompt") then
-						if not d.Enabled then
-							pcall(function() d.Enabled = true end)
-						end
+						if not d.Enabled then pcall(function() d.Enabled = true end) end
 						pcall(fireproximityprompt, d)
 						fired += 1
 					elseif d:IsA("TextButton") or d:IsA("ImageButton") then
-						if pressButton(d) then
-							fired += 1
-						end
+						if pressButton(d) then fired += 1 end
 					end
 				end
 				return fired > 0 and string.format("claimed %d", fired) or "waiting"
 			end,
 		},
 		{
-			id = "teleportCamp",
-			name = "Teleport To Camp",
-			interval = 2,
+			id = "teleportCamp", name = "Teleport To Camp", interval = 2,
 			run = function(self)
 				local teleport = self.network.teleportInstance
 				if not teleport then return "no teleport remote" end
 				local join = self.network.joinInstance
-				if join then
-					pcall(join.InvokeServer, join, INSTANCE_ID)
-				end
+				if join then pcall(join.InvokeServer, join, INSTANCE_ID) end
 				pcall(teleport.InvokeServer, teleport, string.format("__Zone_%d", self.campIndex))
 				return "camp " .. self.campIndex
 			end,
 		},
 		{
-			id = "artifacts",
-			name = "Find Mountain Artifacts",
-			interval = 1,
+			id = "artifacts", name = "Find Mountain Artifacts", interval = 1,
 			run = function(self)
 				local mountain = self:getMountain()
 				local artifacts = mountain and mountain:FindFirstChild("Artifacts")
 				if not artifacts then return "no artifacts" end
-
 				local root = self:getRoot()
 				if not root then return "no character" end
-
 				local best, bestDistance
 				local total, collected = 0, 0
 				for _, artifact in ipairs(artifacts:GetChildren()) do
@@ -2629,26 +2553,20 @@ local DiamondMountain = (function()
 							collected += 1
 						else
 							local d = distanceSq(part.Position, root.Position)
-							if not bestDistance or d < bestDistance then
-								best, bestDistance = part, d
-							end
+							if not bestDistance or d < bestDistance then best, bestDistance = part, d end
 						end
 					end
 				end
-
 				if collected >= total then
 					return string.format("all collected (%d/%d)", collected, total)
 				end
 				if not best then return "no uncollected artifact" end
-
 				root.CFrame = CFrame.new(best.Position + Vector3.new(0, 4, 0))
 				return string.format("artifact %d/%d (%.0f)", collected, total, math.sqrt(bestDistance))
 			end,
 		},
 		{
-			id = "buyUpgrades",
-			name = "Buy Mountain Upgrades",
-			interval = 1,
+			id = "buyUpgrades", name = "Buy Mountain Upgrades", interval = 1,
 			run = function(self)
 				local purchase = self.network.purchaseUpgrade
 				if not purchase then return "no upgrade remote" end
@@ -2663,16 +2581,12 @@ local DiamondMountain = (function()
 			end,
 		},
 		{
-			id = "useBoosts",
-			name = "Use Mountain Boosts",
-			interval = 2,
+			id = "useBoosts", name = "Use Mountain Boosts", interval = 2,
 			run = function(self)
 				local consume = self.network.consumeItem
 				if not consume then return "no consume remote" end
-
 				local uuids = self:getBoostUuids()
 				if #uuids == 0 then
-					-- Trigger GC scan
 					local now = os.clock()
 					if not self.gcScanning and now - self.gcCacheTime > GC_SCAN_COOLDOWN then
 						self.gcCacheTime = now
@@ -2682,26 +2596,20 @@ local DiamondMountain = (function()
 					end
 					return "no boosts found"
 				end
-
 				local now = os.clock()
 				local used = 0
 				for _, uuid in ipairs(uuids) do
 					local last = self.boostCooldown[uuid]
 					if not last or now - last >= BOOST_COOLDOWN then
 						local ok = pcall(consume.InvokeServer, consume, uuid, BOOST_QUANTITY)
-						if ok then
-							self.boostCooldown[uuid] = now
-							used += 1
-						end
+						if ok then self.boostCooldown[uuid] = now; used += 1 end
 					end
 				end
 				return used > 0 and string.format("used %d", used) or "waiting cooldown"
 			end,
 		},
 		{
-			id = "optimize",
-			name = "Optimize Diamond Mountain",
-			interval = 15,
+			id = "optimize", name = "Optimize Diamond Mountain", interval = 15,
 			run = function(self)
 				if self.optimizeDone then
 					self.features.optimize.enabled = false
@@ -2712,10 +2620,7 @@ local DiamondMountain = (function()
 				local cleaned, scanned = 0, 0
 				for _, instance in ipairs(mountain:GetDescendants()) do
 					if instance:IsA("ParticleEmitter") or instance:IsA("Beam") or instance:IsA("Trail") then
-						if instance.Enabled then
-							instance.Enabled = false
-							cleaned += 1
-						end
+						if instance.Enabled then instance.Enabled = false; cleaned += 1 end
 					end
 					scanned += 1
 					if scanned % OPTIMIZE_CHUNK == 0 then task.wait() end
@@ -2729,16 +2634,13 @@ local DiamondMountain = (function()
 
 	function DiamondMountain.new()
 		local self = setmetatable({}, DiamondMountain)
-
 		self.network = {}
 		self.features = {}
 		self.knownPets = {}
 		self.boostCooldown = {}
-
 		self.learnRemotes = true
 		self.learnPets = true
 		self.missingCount = REMOTE_COUNT
-
 		self.rootCache = nil
 		self.rootCacheAt = 0
 		self.mountainCache = nil
@@ -2762,45 +2664,35 @@ local DiamondMountain = (function()
 		self.claimPromptAt = 0
 		self.boostUuidCache = nil
 		self.boostUuidCacheAt = 0
-
 		self.breakableFolder = nil
 		self.breakableList = {}
 		self.breakableDirty = true
 		self.breakableConnections = {}
 		self.watchCheckedAt = 0
-
 		self.petMap = nil
 		self.petMapTarget = nil
 		self.petMapDirty = true
 		self.playerPetModule = nil
-
 		self.gcCache = nil
 		self.gcCacheTime = 0
 		self.gcScanning = false
-
 		self.lastInventoryOpen = 0
 		self.lastExpand = 0
-
 		self.campIndex = 1
 		self.maxCamp = MAX_CAMP
 		self.farmCamp = nil
 		self.pendingCamp = nil
 		self.pendingAt = 0
 		self.campBlocked = {}
-
 		self.optimizeDone = false
-
 		self.selectedEggUuid = nil
 		self.dmFarmPoint = nil
-
 		self.originalNamecall = nil
 		self.hookNamecall = nil
 		self.learnDone = false
-
 		self:buildFeatures()
 		self:resolveRemotes()
 		self:installLearner()
-
 		return self
 	end
 
@@ -2808,13 +2700,9 @@ local DiamondMountain = (function()
 		table.clear(self.features)
 		for _, definition in ipairs(FeatureDefinitions) do
 			self.features[definition.id] = {
-				id = definition.id,
-				name = definition.name,
+				id = definition.id, name = definition.name,
 				interval = definition.interval or DEFAULT_INTERVAL,
-				run = definition.run,
-				enabled = false,
-				status = "idle",
-				thread = nil,
+				run = definition.run, enabled = false, status = "idle", thread = nil,
 			}
 		end
 	end
@@ -2829,9 +2717,7 @@ local DiamondMountain = (function()
 		local okAll, all = pcall(getinstances)
 		if okAll and all then
 			for _, instance in ipairs(all) do
-				if instance.Name == "Network" and instance:IsA("Folder") then
-					return instance
-				end
+				if instance.Name == "Network" and instance:IsA("Folder") then return instance end
 			end
 		end
 		return nil
@@ -2855,9 +2741,7 @@ local DiamondMountain = (function()
 	function DiamondMountain:getMissingRemotes()
 		local missing = {}
 		for key in pairs(REMOTE_NAMES) do
-			if not self.network[key] then
-				table.insert(missing, key)
-			end
+			if not self.network[key] then table.insert(missing, key) end
 		end
 		return missing
 	end
@@ -2865,7 +2749,6 @@ local DiamondMountain = (function()
 	function DiamondMountain:installLearner()
 		if self.hookNamecall then return end
 		local module = self
-
 		local function tryRemoveHook()
 			if module.learnRemotes or module.learnPets then return end
 			if not module.hookNamecall then return end
@@ -2874,37 +2757,27 @@ local DiamondMountain = (function()
 			module.learnDone = true
 			task.defer(function()
 				local ok = pcall(restorefunction, hook)
-				if not ok then
-					pcall(hookmetamethod, game, "__namecall", module.originalNamecall)
-				end
+				if not ok then pcall(hookmetamethod, game, "__namecall", module.originalNamecall) end
 			end)
 		end
-
 		self.hookNamecall = newcclosure(function(instance, ...)
 			if module.learnRemotes or module.learnPets then
 				if typeof(instance) == "Instance" then
 					local name = instance.Name
-
 					if module.learnRemotes then
 						local key = NAME_TO_KEY[name]
 						if key and not module.network[key] then
 							module.network[key] = instance
 							module.missingCount -= 1
-							if module.missingCount <= 0 then
-								module.learnRemotes = false
-							end
+							if module.missingCount <= 0 then module.learnRemotes = false end
 						end
 					end
-
 					if module.learnPets and name == "Breakables_JoinPetBulk" then
 						local map = ...
 						if type(map) == "table" then
 							local captured = 0
 							for petId in pairs(map) do
-								if type(petId) == "number" then
-									module.knownPets[petId] = true
-									captured += 1
-								end
+								if type(petId) == "number" then module.knownPets[petId] = true; captured += 1 end
 							end
 							if captured > 0 then
 								module.learnPets = false
@@ -2912,13 +2785,11 @@ local DiamondMountain = (function()
 							end
 						end
 					end
-
 					tryRemoveHook()
 				end
 			end
 			return module.originalNamecall(instance, ...)
 		end)
-
 		self.originalNamecall = hookmetamethod(game, "__namecall", self.hookNamecall)
 	end
 
@@ -2974,9 +2845,7 @@ local DiamondMountain = (function()
 
 	function DiamondMountain:watchBreakables()
 		local now = os.clock()
-		if self.breakableFolder and now - self.watchCheckedAt < WATCH_CHECK_TTL then
-			return
-		end
+		if self.breakableFolder and now - self.watchCheckedAt < WATCH_CHECK_TTL then return end
 		self.watchCheckedAt = now
 		local things = workspaceService:FindFirstChild("__THINGS")
 		local folder = things and things:FindFirstChild("Breakables")
@@ -3018,9 +2887,7 @@ local DiamondMountain = (function()
 		local best, bestDistance = nil, radius * radius
 		for _, entry in ipairs(self:getBreakables()) do
 			local d = distanceSq(entry.part.Position, position)
-			if d < bestDistance then
-				best, bestDistance = entry, d
-			end
+			if d < bestDistance then best, bestDistance = entry, d end
 		end
 		return best
 	end
@@ -3028,9 +2895,7 @@ local DiamondMountain = (function()
 	function DiamondMountain:isCampWallUp(campIndex)
 		local now = os.clock()
 		local cached = self.wallCache[campIndex]
-		if cached and now - cached.at < WORLD_CACHE_TTL then
-			return cached.up
-		end
+		if cached and now - cached.at < WORLD_CACHE_TTL then return cached.up end
 		local up = false
 		local camps = self:getCamps()
 		local camp = camps and camps:FindFirstChild(tostring(campIndex))
@@ -3057,9 +2922,7 @@ local DiamondMountain = (function()
 	function DiamondMountain:getCampAnchor(campIndex)
 		local now = os.clock()
 		local cached = self.anchorCache[campIndex]
-		if cached and now - cached.at < WORLD_CACHE_TTL then
-			return cached.pos
-		end
+		if cached and now - cached.at < WORLD_CACHE_TTL then return cached.pos end
 		local pos
 		local camps = self:getCamps()
 		local camp = camps and camps:FindFirstChild(tostring(campIndex))
@@ -3069,9 +2932,7 @@ local DiamondMountain = (function()
 				pos = merchant.Position
 			else
 				local wallFront = camp:FindFirstChild("WallFront")
-				if wallFront and wallFront:IsA("BasePart") then
-					pos = wallFront.Position
-				end
+				if wallFront and wallFront:IsA("BasePart") then pos = wallFront.Position end
 			end
 		end
 		self.anchorCache[campIndex] = { pos = pos, at = now }
@@ -3095,9 +2956,7 @@ local DiamondMountain = (function()
 		local highestOpen = self:getHighestOpenCamp()
 		for index = highestOpen, 1, -1 do
 			local blockedAt = self.campBlocked[index]
-			if not blockedAt or now - blockedAt > CAMP_UNREACHABLE_TTL then
-				return index
-			end
+			if not blockedAt or now - blockedAt > CAMP_UNREACHABLE_TTL then return index end
 		end
 		return nil
 	end
@@ -3118,11 +2977,9 @@ local DiamondMountain = (function()
 
 	function DiamondMountain:getFarmInfo()
 		return {
-			farmCamp = self.farmCamp,
-			pendingCamp = self.pendingCamp,
+			farmCamp = self.farmCamp, pendingCamp = self.pendingCamp,
 			currentCamp = self:getCurrentCamp(),
-			highestOpen = self:getHighestOpenCamp(),
-			maxCamp = self.maxCamp,
+			highestOpen = self:getHighestOpenCamp(), maxCamp = self.maxCamp,
 		}
 	end
 
@@ -3138,7 +2995,6 @@ local DiamondMountain = (function()
 		self:resolveRemotes()
 		local join = self.network.joinInstance
 		if not join then return false, "join remote not resolved" end
-
 		local root = self:getRoot()
 		if root then
 			local things = workspaceService:FindFirstChild("__THINGS")
@@ -3151,7 +3007,6 @@ local DiamondMountain = (function()
 				task.wait(0.5)
 			end
 		end
-
 		local ok = pcall(join.InvokeServer, join, INSTANCE_ID)
 		if ok then return true, "joining" end
 		pcall(join.FireServer, join, INSTANCE_ID)
@@ -3163,75 +3018,51 @@ local DiamondMountain = (function()
 		if not root then return false end
 		local targetPos = entry.part.Position
 		local direction = targetPos - root.Position
-		if direction.Magnitude < 0.01 then
-			direction = Vector3.new(0, -1, 0)
-		end
+		if direction.Magnitude < 0.01 then direction = Vector3.new(0, -1, 0) end
 		local click = self.network.click
-		if click then
-			pcall(click.FireServer, click, targetPos, direction.Unit)
-		end
+		if click then pcall(click.FireServer, click, targetPos, direction.Unit) end
 		local dealDamage = self.network.dealDamage
-		if dealDamage then
-			pcall(dealDamage.FireServer, dealDamage, entry.id)
-		end
+		if dealDamage then pcall(dealDamage.FireServer, dealDamage, entry.id) end
 		return true
 	end
 
-	-- FIX: use pet uids from PlayerPet.GetAll() (same as FastFarm)
 	function DiamondMountain:joinPets(breakableId)
 		local joinPetBulk = self.network.joinPetBulk
 		if not joinPetBulk or not breakableId then return false end
-
 		local uids = {}
-
 		if not self.playerPetModule then
 			local lib = replicatedStorage:FindFirstChild("Library")
 			local client = lib and lib:FindFirstChild("Client")
 			local pp = client and client:FindFirstChild("PlayerPet")
 			if pp then
 				local ok, mod = pcall(require, pp)
-				if ok then
-					self.playerPetModule = mod
-				end
+				if ok then self.playerPetModule = mod end
 			end
 		end
-
 		if self.playerPetModule and self.playerPetModule.GetAll then
 			local ok, pets = pcall(self.playerPetModule.GetAll)
 			if ok and type(pets) == "table" then
 				for _, pet in pairs(pets) do
 					if type(pet) == "table" and pet.owner == localPlayer then
 						local uid = pet.euid or pet.uid
-						if uid then
-							table.insert(uids, uid)
-						end
+						if uid then table.insert(uids, uid) end
 					end
 				end
 			end
 		end
-
 		if #uids == 0 then
-			for petId in pairs(self.knownPets) do
-				table.insert(uids, petId)
-			end
+			for petId in pairs(self.knownPets) do table.insert(uids, petId) end
 		end
-
 		if #uids == 0 then return false end
-
 		local map = {}
-		for _, uid in ipairs(uids) do
-			map[uid] = breakableId
-		end
-
+		for _, uid in ipairs(uids) do map[uid] = breakableId end
 		pcall(joinPetBulk.FireServer, joinPetBulk, map)
 		return true
 	end
 
 	function DiamondMountain:getYetiSpot()
 		local now = os.clock()
-		if self.yetiSpot and now - self.yetiSpotAt < WORLD_CACHE_TTL then
-			return self.yetiSpot
-		end
+		if self.yetiSpot and now - self.yetiSpotAt < WORLD_CACHE_TTL then return self.yetiSpot end
 		local spot
 		local mountain = self:getMountain()
 		local summit = mountain and mountain:FindFirstChild("Summit")
@@ -3255,9 +3086,7 @@ local DiamondMountain = (function()
 
 	function DiamondMountain:getMountainEggs()
 		local now = os.clock()
-		if self.eggCache and now - self.eggCacheAt < EGG_CACHE_TTL then
-			return self.eggCache
-		end
+		if self.eggCache and now - self.eggCacheAt < EGG_CACHE_TTL then return self.eggCache end
 		local things = workspaceService:FindFirstChild("__THINGS")
 		local folder = things and things:FindFirstChild("CustomEggs")
 		local eggs = {}
@@ -3289,44 +3118,16 @@ local DiamondMountain = (function()
 					local parent = descendant.Parent
 					local inClaim = false
 					while parent and parent ~= expedition do
-						if parent.Name == "ClaimPillar" then
-							inClaim = true
-							break
-						end
+						if parent.Name == "ClaimPillar" then inClaim = true; break end
 						parent = parent.Parent
 					end
-					if not inClaim then
-						prompts[#prompts + 1] = descendant
-					end
+					if not inClaim then prompts[#prompts + 1] = descendant end
 				end
 			end
 		end
 		self.expeditionPrompts = prompts
 		self.expeditionPromptsAt = now
 		return prompts
-	end
-
-	function DiamondMountain:getClaimPrompt()
-		local now = os.clock()
-		if self.claimPrompt ~= nil and now - self.claimPromptAt < EXPEDITION_CACHE_TTL then
-			return self.claimPrompt or nil
-		end
-		local prompt = nil
-		local mountain = self:getMountain()
-		local summit = mountain and mountain:FindFirstChild("Summit")
-		local expedition = summit and summit:FindFirstChild("Expedition")
-		local claim = expedition and expedition:FindFirstChild("ClaimPillar")
-		if claim then
-			for _, descendant in ipairs(claim:GetDescendants()) do
-				if descendant:IsA("ProximityPrompt") then
-					prompt = descendant
-					break
-				end
-			end
-		end
-		self.claimPrompt = prompt or false
-		self.claimPromptAt = now
-		return prompt
 	end
 
 	function DiamondMountain:getUpgradeIds()
@@ -3371,10 +3172,7 @@ local DiamondMountain = (function()
 		local found = nil
 		if inventory then
 			for _, instance in ipairs(inventory:GetDescendants()) do
-				if instance.Name == name then
-					found = instance
-					break
-				end
+				if instance.Name == name then found = instance; break end
 			end
 		end
 		self.categoryCache[name] = { instance = found, at = now }
@@ -3391,15 +3189,12 @@ local DiamondMountain = (function()
 		return pressButton(collapse)
 	end
 
-	-- FIX: read boost uuids from Save.Inventory.Consumable
 	function DiamondMountain:getBoostUuids()
 		local now = os.clock()
 		if self.boostUuidCache and now - self.boostUuidCacheAt < BOOST_UUID_CACHE_TTL then
 			return self.boostUuidCache
 		end
-
 		local uuids, seen = {}, {}
-
 		local lib = replicatedStorage:FindFirstChild("Library")
 		local client = lib and lib:FindFirstChild("Client")
 		local saveMod = client and client:FindFirstChild("Save")
@@ -3425,7 +3220,6 @@ local DiamondMountain = (function()
 				end
 			end
 		end
-
 		if #uuids == 0 then
 			local category
 			for _, name in ipairs(BOOST_CATEGORIES) do
@@ -3447,7 +3241,6 @@ local DiamondMountain = (function()
 				end
 			end
 		end
-
 		self.boostUuidCache = uuids
 		self.boostUuidCacheAt = now
 		return uuids
@@ -3458,10 +3251,7 @@ local DiamondMountain = (function()
 		self.gcScanning = true
 		local results, seen = {}, {}
 		local okGc, gc = pcall(getgc, true)
-		if not okGc or not gc then
-			self.gcScanning = false
-			return results
-		end
+		if not okGc or not gc then self.gcScanning = false; return results end
 		local total = #gc
 		local index = 1
 		while index <= total do
@@ -3475,10 +3265,7 @@ local DiamondMountain = (function()
 							and type(value) == "table" then
 							local hasCount = false
 							for _, field in ipairs(BOOST_COUNT_FIELDS) do
-								if type(value[field]) == "number" then
-									hasCount = true
-									break
-								end
+								if type(value[field]) == "number" then hasCount = true; break end
 							end
 							if hasCount then
 								for _, field in ipairs(BOOST_NAME_FIELDS) do
@@ -3627,6 +3414,18 @@ local function ensureDmInstance()
 	return instance
 end
 
+local function autoJoinTick()
+	local instance = ensureDmInstance()
+	if not instance then return end
+	local root = getRoot()
+	if not root then return end
+	local info = getInstanceInfo()
+	local inDM = info and info.InstanceId == "DiamondMountain"
+	if not inDM then
+		instance:joinEvent()
+	end
+end
+
 -- -----------------------------------------------------
 -- UI.
 -- -----------------------------------------------------
@@ -3687,38 +3486,18 @@ local function refreshAllDropdowns()
 	EggPositions.data = nil
 	EggPositions.timestamp = 0
 	eggPositionCache = setmetatable({}, { __mode = "k" })
-	PetsCache.data = nil
-	PetsCache.timestamp = 0
 	ZoneCache.data = nil
 	ZoneCache.timestamp = 0
 	pcall(function()
-		if wheelsDropdown then
-			wheelsDropdown:Refresh(buildOptions(getDirectoryIds("SpinnyWheels")))
-		end
-		if chestsDropdown then
-			chestsDropdown:Refresh(buildOptions(getChestNames()))
-		end
-		if giftsDropdown then
-			giftsDropdown:Refresh(buildOptions(getGiftIds()))
-		end
-		if lootboxDropdown then
-			lootboxDropdown:Refresh(buildOptions(getLootboxIds()))
-		end
-		if fruitDropdown then
-			fruitDropdown:Refresh(buildOptions(getBucketIds("Fruit")))
-		end
-		if fruitUpgradeDropdown then
-			fruitUpgradeDropdown:Refresh(buildOptions(getDirectoryIds("Fruits")))
-		end
-		if enchantRarityDropdown then
-			enchantRarityDropdown:Refresh(buildOptions(getEnchantRarities()))
-		end
-		if eggDropdown then
-			eggDropdown:Refresh(getEggIdList())
-		end
-		if customEggDropdown then
-			customEggDropdown:Refresh(getCustomEggUuids())
-		end
+		if wheelsDropdown then wheelsDropdown:Refresh(buildOptions(getDirectoryIds("SpinnyWheels"))) end
+		if chestsDropdown then chestsDropdown:Refresh(buildOptions(getChestNames())) end
+		if giftsDropdown then giftsDropdown:Refresh(buildOptions(getGiftIds())) end
+		if lootboxDropdown then lootboxDropdown:Refresh(buildOptions(getLootboxIds())) end
+		if fruitDropdown then fruitDropdown:Refresh(buildOptions(getBucketIds("Fruit"))) end
+		if fruitUpgradeDropdown then fruitUpgradeDropdown:Refresh(buildOptions(getDirectoryIds("Fruits"))) end
+		if enchantRarityDropdown then enchantRarityDropdown:Refresh(buildOptions(getEnchantRarities())) end
+		if eggDropdown then eggDropdown:Refresh(getEggIdList()) end
+		if customEggDropdown then customEggDropdown:Refresh(getCustomEggUuids()) end
 	end)
 end
 
@@ -3727,47 +3506,30 @@ getgenv().VRT_RefreshDropdowns = refreshAllDropdowns
 -- ================= AUTO-FARM =================
 if tabs.farm then
 	tabs.farm:CreateSection("Farming Section")
-
 	tabs.farm:CreateSlider({
 		Name = "Fast Farm Cooldown (only for Heartbeat one)",
-		Range = { 0.05, 1 },
-		Increment = 0.01,
-		Suffix = "s",
-		CurrentValue = settings.FastFarmCooldown,
-		Flag = "FastFarmCooldown",
-		Callback = function(value)
-			settings.FastFarmCooldown = value
-			queueSave()
-		end,
+		Range = { 0.05, 1 }, Increment = 0.01, Suffix = "s",
+		CurrentValue = settings.FastFarmCooldown, Flag = "FastFarmCooldown",
+		Callback = function(value) settings.FastFarmCooldown = value; queueSave() end,
 	})
-
 	tabs.farm:CreateToggle({
-		Name = "Fast Farm (Heartbeat)",
-		CurrentValue = settings.FastFarmHeartbeat,
-		Flag = "FastFarmHeartbeat",
+		Name = "Fast Farm (Heartbeat)", CurrentValue = settings.FastFarmHeartbeat, Flag = "FastFarmHeartbeat",
 		Callback = function(value)
 			settings.FastFarmHeartbeat = value
 			queueSave()
 			bindConnection("FastFarmHeartbeat", runService.Heartbeat, Core.FastFarm)
 		end,
 	})
-
 	tabs.farm:CreateToggle({
-		Name = "Fast Farm (While loop)",
-		CurrentValue = settings.FastFarmLoop,
-		Flag = "FastFarmLoop",
+		Name = "Fast Farm (While loop)", CurrentValue = settings.FastFarmLoop, Flag = "FastFarmLoop",
 		Callback = toggleLoop("FastFarmLoop", 0.15, Core.FastFarm),
 	})
-
 	tabs.farm:CreateToggle({
-		Name = "Auto Collect Orbs",
-		CurrentValue = settings.CollectOrbs,
-		Flag = "CollectOrbs",
+		Name = "Auto Collect Orbs", CurrentValue = settings.CollectOrbs, Flag = "CollectOrbs",
 		Callback = toggleLoop("CollectOrbs", 0.3, Core.CollectOrbs),
 	})
 
 	tabs.farm:CreateSection("Farm Point")
-
 	tabs.farm:CreateButton({
 		Name = "Set Farm Point (lưu vị trí hiện tại)",
 		Callback = function()
@@ -3776,32 +3538,19 @@ if tabs.farm then
 				rayfield:Notify({ Title = "VRT", Content = "Không tìm thấy nhân vật", Duration = 3 })
 				return
 			end
-			settings.FarmPoint = {
-				x = root.Position.X,
-				y = root.Position.Y,
-				z = root.Position.Z,
-			}
+			settings.FarmPoint = { x = root.Position.X, y = root.Position.Y, z = root.Position.Z }
 			queueSave()
 			rayfield:Notify({
 				Title = "VRT",
-				Content = ("Đã lưu farm point (%.0f, %.0f, %.0f)"):format(
-					root.Position.X, root.Position.Y, root.Position.Z
-				),
+				Content = ("Đã lưu farm point (%.0f, %.0f, %.0f)"):format(root.Position.X, root.Position.Y, root.Position.Z),
 				Duration = 4,
 			})
 		end,
 	})
-
 	tabs.farm:CreateToggle({
-		Name = "Use Farm Point",
-		CurrentValue = settings.UseFarmPoint or false,
-		Flag = "UseFarmPoint",
-		Callback = function(value)
-			settings.UseFarmPoint = value
-			queueSave()
-		end,
+		Name = "Use Farm Point", CurrentValue = settings.UseFarmPoint or false, Flag = "UseFarmPoint",
+		Callback = function(value) settings.UseFarmPoint = value; queueSave() end,
 	})
-
 	tabs.farm:CreateButton({
 		Name = "Clear Farm Point",
 		Callback = function()
@@ -3811,7 +3560,6 @@ if tabs.farm then
 			rayfield:Notify({ Title = "VRT", Content = "Đã xoá farm point", Duration = 3 })
 		end,
 	})
-
 	tabs.farm:CreateButton({
 		Name = "Teleport To Farm Point",
 		Callback = function()
@@ -3828,36 +3576,33 @@ if tabs.farm then
 	})
 
 	tabs.farm:CreateSection("Click Aura")
-
 	tabs.farm:CreateToggle({
-		Name = "Click Aura",
-		CurrentValue = settings.ClickAura,
-		Flag = "ClickAura",
+		Name = "Click Aura", CurrentValue = settings.ClickAura, Flag = "ClickAura",
 		Callback = function(value)
 			settings.ClickAura = value
 			queueSave()
 			vrt.clickAuraDebug = false
-			bindConnection("ClickAura", runService.Heartbeat, Core.ClickAura, 0.05)
+			bindConnection("ClickAura", runService.Heartbeat, Core.ClickAura, settings.ClickAuraCooldown or 0.016)
 		end,
 	})
-
 	tabs.farm:CreateSlider({
-		Name = "Click Aura Radius",
-		Range = { 10, 150 },
-		Increment = 5,
-		Suffix = "Studs",
-		CurrentValue = settings.ClickAuraRadius,
-		Flag = "ClickAuraRadius",
+		Name = "Click Aura Radius", Range = { 10, 250 }, Increment = 5, Suffix = "Studs",
+		CurrentValue = settings.ClickAuraRadius, Flag = "ClickAuraRadius",
+		Callback = function(value) settings.ClickAuraRadius = value; queueSave() end,
+	})
+	tabs.farm:CreateSlider({
+		Name = "Click Aura Cooldown", Range = { 0.016, 0.2 }, Increment = 0.004, Suffix = "s",
+		CurrentValue = settings.ClickAuraCooldown or 0.016, Flag = "ClickAuraCooldown",
 		Callback = function(value)
-			settings.ClickAuraRadius = value
+			settings.ClickAuraCooldown = value
 			queueSave()
+			if settings.ClickAura then
+				bindConnection("ClickAura", runService.Heartbeat, Core.ClickAura, value)
+			end
 		end,
 	})
-
 	tabs.farm:CreateToggle({
-		Name = "Click Aura Visualizer",
-		CurrentValue = settings.ClickAuraViz,
-		Flag = "ClickAuraViz",
+		Name = "Click Aura Visualizer", CurrentValue = settings.ClickAuraViz, Flag = "ClickAuraViz",
 		Callback = function(value)
 			settings.ClickAuraViz = value
 			queueSave()
@@ -3871,29 +3616,20 @@ if tabs.farm then
 	})
 
 	tabs.farm:CreateSection("Optimize")
-
 	tabs.farm:CreateToggle({
-		Name = "Inf Pet Speed",
-		CurrentValue = settings.InfinitePetSpeed,
-		Flag = "InfinitePetSpeed",
+		Name = "Inf Pet Speed", CurrentValue = settings.InfinitePetSpeed, Flag = "InfinitePetSpeed",
 		Callback = function(value)
 			settings.InfinitePetSpeed = value
 			queueSave()
 			Core.InfinitePetSpeed(value)
 		end,
 	})
-
 	tabs.farm:CreateToggle({
-		Name = "Optimize Pets",
-		CurrentValue = settings.OptimizePets,
-		Flag = "OptimizePets",
+		Name = "Optimize Pets", CurrentValue = settings.OptimizePets, Flag = "OptimizePets",
 		Callback = toggleLoop("OptimizePets", 10, Core.OptimizePets),
 	})
-
 	tabs.farm:CreateToggle({
-		Name = "Anti-Lag (xoá hiệu ứng)",
-		CurrentValue = settings.AntiLag,
-		Flag = "AntiLag",
+		Name = "Anti-Lag (xoá hiệu ứng)", CurrentValue = settings.AntiLag, Flag = "AntiLag",
 		Callback = function(value)
 			settings.AntiLag = value
 			queueSave()
@@ -3907,7 +3643,6 @@ if tabs.farm then
 			end
 		end,
 	})
-
 	tabs.farm:CreateButton({
 		Name = "Optimize Breakables",
 		Callback = function() Core.OptimizeBreakables() end,
@@ -3917,153 +3652,92 @@ end
 -- ================= AUTO KEYS / TICKETS =================
 if tabs.keys then
 	tabs.keys:CreateSection("Spinny Wheels Section")
-
 	wheelsDropdown = tabs.keys:CreateDropdown({
 		Name = "Select Which Spinny Wheels To Spin",
 		Options = buildOptions(getDirectoryIds("SpinnyWheels")),
-		CurrentOption = settings.SelectedWheels,
-		MultipleOptions = true,
-		Flag = "SelectedWheels",
-		Callback = function(option)
-			settings.SelectedWheels = option
-			queueSave()
-		end,
+		CurrentOption = settings.SelectedWheels, MultipleOptions = true, Flag = "SelectedWheels",
+		Callback = function(option) settings.SelectedWheels = option; queueSave() end,
 	})
-
 	tabs.keys:CreateToggle({
-		Name = "Spin Selected Wheels",
-		CurrentValue = settings.SpinWheels,
-		Flag = "SpinWheels",
+		Name = "Spin Selected Wheels", CurrentValue = settings.SpinWheels, Flag = "SpinWheels",
 		Callback = toggleLoop("SpinWheels", 0.35, Core.SpinWheels),
 	})
 
 	tabs.keys:CreateSection("Chests Section")
-
 	chestsDropdown = tabs.keys:CreateDropdown({
 		Name = "Select Which Chests To Open",
 		Options = buildOptions(getChestNames()),
-		CurrentOption = settings.SelectedChests,
-		MultipleOptions = true,
-		Flag = "SelectedChests",
-		Callback = function(option)
-			settings.SelectedChests = option
-			queueSave()
-		end,
+		CurrentOption = settings.SelectedChests, MultipleOptions = true, Flag = "SelectedChests",
+		Callback = function(option) settings.SelectedChests = option; queueSave() end,
 	})
-
 	tabs.keys:CreateToggle({
-		Name = "Open Selected Chests",
-		CurrentValue = settings.OpenChests,
-		Flag = "OpenChests",
+		Name = "Open Selected Chests", CurrentValue = settings.OpenChests, Flag = "OpenChests",
 		Callback = toggleLoop("OpenChests", 1, Core.OpenChests),
 	})
 
 	tabs.keys:CreateSection("Keys Section")
-
 	tabs.keys:CreateToggle({
-		Name = "Combine Keys All at Once",
-		CurrentValue = settings.CombineKeysAll,
-		Flag = "CombineKeysAll",
+		Name = "Combine Keys All at Once", CurrentValue = settings.CombineKeysAll, Flag = "CombineKeysAll",
 		Callback = toggleLoop("CombineKeysAll", 3, Core.CombineKeysAll),
 	})
-
 	tabs.keys:CreateToggle({
-		Name = "Combine Keys One at Once",
-		CurrentValue = settings.CombineKeysOnce,
-		Flag = "CombineKeysOnce",
+		Name = "Combine Keys One at Once", CurrentValue = settings.CombineKeysOnce, Flag = "CombineKeysOnce",
 		Callback = toggleLoop("CombineKeysOnce", 1.5, Core.CombineKeysOnce),
 	})
 
 	tabs.keys:CreateSection("Gift Bags Section")
-
 	giftsDropdown = tabs.keys:CreateDropdown({
 		Name = "Select Which Gift Bags To Open",
 		Options = buildOptions(getGiftIds()),
-		CurrentOption = settings.SelectedGifts,
-		MultipleOptions = true,
-		Flag = "SelectedGifts",
-		Callback = function(option)
-			settings.SelectedGifts = option
-			queueSave()
-		end,
+		CurrentOption = settings.SelectedGifts, MultipleOptions = true, Flag = "SelectedGifts",
+		Callback = function(option) settings.SelectedGifts = option; queueSave() end,
 	})
-
 	tabs.keys:CreateToggle({
-		Name = "Open Selected Gift Bags",
-		CurrentValue = settings.OpenGifts,
-		Flag = "OpenGifts",
+		Name = "Open Selected Gift Bags", CurrentValue = settings.OpenGifts, Flag = "OpenGifts",
 		Callback = toggleLoop("OpenGifts", 1, Core.OpenGiftBags),
 	})
 
 	tabs.keys:CreateSection("Lootboxes Section")
-
 	lootboxDropdown = tabs.keys:CreateDropdown({
 		Name = "Select Which Lootboxes To Open",
 		Options = buildOptions(getLootboxIds()),
-		CurrentOption = settings.SelectedLootboxes,
-		MultipleOptions = true,
-		Flag = "SelectedLootboxes",
-		Callback = function(option)
-			settings.SelectedLootboxes = option
-			queueSave()
-		end,
+		CurrentOption = settings.SelectedLootboxes, MultipleOptions = true, Flag = "SelectedLootboxes",
+		Callback = function(option) settings.SelectedLootboxes = option; queueSave() end,
 	})
-
 	tabs.keys:CreateToggle({
-		Name = "Open Selected Lootboxes",
-		CurrentValue = settings.OpenLootboxes,
-		Flag = "OpenLootboxes",
+		Name = "Open Selected Lootboxes", CurrentValue = settings.OpenLootboxes, Flag = "OpenLootboxes",
 		Callback = toggleLoop("OpenLootboxes", 1.5, Core.OpenLootboxes),
 	})
 
 	tabs.keys:CreateSection("Fruits Section")
-
 	fruitDropdown = tabs.keys:CreateDropdown({
 		Name = "Select Fruits to Use",
 		Options = buildOptions(getBucketIds("Fruit")),
-		CurrentOption = settings.SelectedFruits,
-		MultipleOptions = true,
-		Flag = "SelectedFruits",
-		Callback = function(option)
-			settings.SelectedFruits = option
-			queueSave()
-		end,
+		CurrentOption = settings.SelectedFruits, MultipleOptions = true, Flag = "SelectedFruits",
+		Callback = function(option) settings.SelectedFruits = option; queueSave() end,
 	})
-
 	tabs.keys:CreateToggle({
-		Name = "Use Selected Fruits (Max)",
-		CurrentValue = settings.ConsumeFruits,
-		Flag = "ConsumeFruits",
+		Name = "Use Selected Fruits (Max)", CurrentValue = settings.ConsumeFruits, Flag = "ConsumeFruits",
 		Callback = function(value)
 			settings.ConsumeFruits = value
 			queueSave()
-			if value then
-				startLoop("ConsumeFruits", 3, Core.ConsumeFruits)
-			else
-				stopLoop("ConsumeFruits")
-			end
+			if value then startLoop("ConsumeFruits", 3, Core.ConsumeFruits) else stopLoop("ConsumeFruits") end
 		end,
 	})
 
 	tabs.keys:CreateSection("Secret Keys Section")
-
 	tabs.keys:CreateToggle({
-		Name = "Farm Treehouse Merchant",
-		CurrentValue = settings.FarmTreehouse,
-		Flag = "FarmTreehouse",
+		Name = "Farm Treehouse Merchant", CurrentValue = settings.FarmTreehouse, Flag = "FarmTreehouse",
 		Callback = toggleLoop("FarmTreehouse", 5, Core.FarmTreehouse),
 	})
-
 	tabs.keys:CreateButton({
 		Name = "Unlock Treehouse",
 		Callback = function() invoke("SecretRoom_Unlock", TREEHOUSE_ROOM) end,
 	})
-
 	tabs.keys:CreateButton({
 		Name = "Enter Treehouse",
 		Callback = function() invoke("Instancing_PlayerEnterInstance", TREEHOUSE_ID) end,
 	})
-
 	tabs.keys:CreateButton({
 		Name = "Leave Treehouse",
 		Callback = function() fire("Instancing_PlayerLeaveInstance", TREEHOUSE_ID) end,
@@ -4073,85 +3747,62 @@ end
 -- ================= EGGS =================
 if tabs.eggs then
 	tabs.eggs:CreateSection("Notification")
-
 	tabs.eggs:CreateToggle({
-		Name = "Show Egg Notification (random color)",
-		CurrentValue = settings.EggNotification,
-		Flag = "EggNotification",
-		Callback = function(value)
-			settings.EggNotification = value
-			queueSave()
-		end,
+		Name = "Show Egg Notification (random color)", CurrentValue = settings.EggNotification, Flag = "EggNotification",
+		Callback = function(value) settings.EggNotification = value; queueSave() end,
 	})
 
 	tabs.eggs:CreateSection("Egg Opening")
-
 	tabs.eggs:CreateToggle({
-		Name = "Hide Egg Animation",
-		CurrentValue = settings.HideEggAnim,
-		Flag = "HideEggAnim",
+		Name = "Hide Egg Animation", CurrentValue = settings.HideEggAnim, Flag = "HideEggAnim",
 		Callback = function(value)
 			settings.HideEggAnim = value
 			queueSave()
-			if value then
-				pcall(hideEggGuis)
-			end
+			if value then pcall(hideEggGuis) end
 		end,
 	})
-
 	tabs.eggs:CreateToggle({
-		Name = "Auto Open Closest Egg (Max)",
-		CurrentValue = settings.OpenEgg,
-		Flag = "OpenEgg",
+		Name = "Hook Egg Animation (game-native notif, no anim)",
+		CurrentValue = settings.HookEggAnimation or false, Flag = "HookEggAnimation",
+		Callback = function(value)
+			settings.HookEggAnimation = value
+			queueSave()
+			installEggHook()
+		end,
+	})
+	tabs.eggs:CreateToggle({
+		Name = "Auto Open Closest Egg (Max)", CurrentValue = settings.OpenEgg, Flag = "OpenEgg",
 		Callback = function(value)
 			settings.OpenEgg = value
 			queueSave()
 			vrt.eggDebugLogged = false
-			if value then
-				startLoop("OpenEgg", 0.3, Core.OpenEgg)
-			else
-				stopLoop("OpenEgg")
-			end
+			if value then startLoop("OpenEgg", 0.3, Core.OpenEgg) else stopLoop("OpenEgg") end
 		end,
 	})
 
 	tabs.eggs:CreateSection("Select Egg (Normal)")
-
 	eggDropdown = tabs.eggs:CreateDropdown({
 		Name = "Select Egg To Open",
 		Options = getEggIdList(),
 		CurrentOption = { settings.SelectedEggId ~= "" and settings.SelectedEggId or (getEggIdList()[1] or "") },
-		MultipleOptions = false,
-		Flag = "SelectedEggId",
-		Callback = function(option)
-			settings.SelectedEggId = option[1]
-			queueSave()
-		end,
+		MultipleOptions = false, Flag = "SelectedEggId",
+		Callback = function(option) settings.SelectedEggId = option[1]; queueSave() end,
 	})
-
 	tabs.eggs:CreateToggle({
-		Name = "Auto Open Selected Egg (Max)",
-		CurrentValue = settings.OpenSelectedEgg,
-		Flag = "OpenSelectedEgg",
+		Name = "Auto Open Selected Egg (Max)", CurrentValue = settings.OpenSelectedEgg, Flag = "OpenSelectedEgg",
 		Callback = function(value)
 			settings.OpenSelectedEgg = value
 			queueSave()
-			if value then
-				startLoop("OpenSelectedEgg", 0.3, Core.OpenSelectedEgg)
-			else
-				stopLoop("OpenSelectedEgg")
-			end
+			if value then startLoop("OpenSelectedEgg", 0.3, Core.OpenSelectedEgg) else stopLoop("OpenSelectedEgg") end
 		end,
 	})
 
 	tabs.eggs:CreateSection("Select Egg (Custom / DM)")
-
 	customEggDropdown = tabs.eggs:CreateDropdown({
 		Name = "Select Custom Egg (DM)",
 		Options = getCustomEggUuids(),
 		CurrentOption = { settings.SelectedCustomEggUuid ~= "" and settings.SelectedCustomEggUuid or (getCustomEggUuids()[1] or "") },
-		MultipleOptions = false,
-		Flag = "SelectedCustomEggUuid",
+		MultipleOptions = false, Flag = "SelectedCustomEggUuid",
 		Callback = function(option)
 			settings.SelectedCustomEggUuid = option[1]
 			queueSave()
@@ -4160,24 +3811,16 @@ if tabs.eggs then
 			end
 		end,
 	})
-
 	tabs.eggs:CreateToggle({
-		Name = "Auto Buy Selected Custom Egg",
-		CurrentValue = settings.BuySelectedCustomEgg,
-		Flag = "BuySelectedCustomEgg",
+		Name = "Auto Buy Selected Custom Egg", CurrentValue = settings.BuySelectedCustomEgg, Flag = "BuySelectedCustomEgg",
 		Callback = function(value)
 			settings.BuySelectedCustomEgg = value
 			queueSave()
-			if value then
-				startLoop("BuySelectedCustomEgg", 0.6, Core.BuySelectedCustomEgg)
-			else
-				stopLoop("BuySelectedCustomEgg")
-			end
+			if value then startLoop("BuySelectedCustomEgg", 0.6, Core.BuySelectedCustomEgg) else stopLoop("BuySelectedCustomEgg") end
 		end,
 	})
 
 	tabs.eggs:CreateSection("Utility")
-
 	tabs.eggs:CreateButton({
 		Name = "Refresh Dropdowns",
 		Callback = function()
@@ -4186,7 +3829,6 @@ if tabs.eggs then
 			rayfield:Notify({ Title = "VRT", Content = "Đã refresh dropdowns", Duration = 3 })
 		end,
 	})
-
 	tabs.eggs:CreateButton({
 		Name = "Print Egg Debug",
 		Callback = function()
@@ -4197,9 +3839,7 @@ if tabs.eggs then
 				local closest, closestDist = nil, math.huge
 				for _, egg in ipairs(eggs) do
 					local d = (egg.position - root.Position).Magnitude
-					if d < closestDist then
-						closest, closestDist = egg, d
-					end
+					if d < closestDist then closest, closestDist = egg, d end
 				end
 				if closest then
 					print(("[VRT] Closest egg number: %d"):format(closest.eggNumber))
@@ -4208,13 +3848,6 @@ if tabs.eggs then
 				end
 			end
 			print(("[VRT] Max hatch: %d"):format(getMaxHatch()))
-			local playerGui = localPlayer:FindFirstChild("PlayerGui")
-			if playerGui then
-				local eggGui = playerGui:FindFirstChild("EggOpenAnimation")
-				print(("[VRT] EggOpenAnimation: %s | Enabled=%s"):format(
-					tostring(eggGui ~= nil), eggGui and tostring(eggGui.Enabled) or "nil"
-				))
-			end
 		end,
 	})
 end
@@ -4222,101 +3855,100 @@ end
 -- ================= AUTO =================
 if tabs.auto then
 	tabs.auto:CreateToggle({
-		Name = "Auto Daycare (Claim and Enroll)",
-		CurrentValue = settings.Daycare,
-		Flag = "Daycare",
+		Name = "Auto Daycare (Claim and Enroll)", CurrentValue = settings.Daycare, Flag = "Daycare",
 		Callback = toggleLoop("Daycare", 30, Core.Daycare),
 	})
-
 	tabs.auto:CreateToggle({
-		Name = "Buy Pet Slots",
-		CurrentValue = settings.PetSlots,
-		Flag = "PetSlots",
+		Name = "Buy Pet Slots", CurrentValue = settings.PetSlots, Flag = "PetSlots",
 		Callback = toggleLoop("PetSlots", 10, Core.BuyPetSlots),
 	})
-
 	tabs.auto:CreateToggle({
-		Name = "Buy Egg Slots",
-		CurrentValue = settings.AutoEggSlots,
-		Flag = "AutoEggSlots",
+		Name = "Buy Egg Slots", CurrentValue = settings.AutoEggSlots, Flag = "AutoEggSlots",
 		Callback = toggleLoop("AutoEggSlots", 10, Core.BuyEggSlots),
 	})
-
 	tabs.auto:CreateToggle({
-		Name = "Buy Next Zone",
-		CurrentValue = settings.Zones,
-		Flag = "Zones",
+		Name = "Buy Next Zone", CurrentValue = settings.Zones, Flag = "Zones",
 		Callback = toggleLoop("Zones", 2, Core.BuyZone),
 	})
-
 	tabs.auto:CreateToggle({
-		Name = "Use Ultimate",
-		CurrentValue = settings.Ultimate,
-		Flag = "Ultimate",
+		Name = "Auto Rebirth", CurrentValue = settings.Rebirth, Flag = "Rebirth",
+		Callback = toggleLoop("Rebirth", 5, Core.Rebirth),
+	})
+	tabs.auto:CreateToggle({
+		Name = "Use Ultimate", CurrentValue = settings.Ultimate, Flag = "Ultimate",
 		Callback = toggleLoop("Ultimate", 2, Core.UseUltimate),
 	})
-
 	tabs.auto:CreateToggle({
-		Name = "Auto Free Gifts",
-		CurrentValue = settings.FreeGifts,
-		Flag = "FreeGifts",
+		Name = "Auto Free Gifts", CurrentValue = settings.FreeGifts, Flag = "FreeGifts",
 		Callback = toggleLoop("FreeGifts", 60, Core.ClaimFreeGifts),
 	})
-
 	tabs.auto:CreateToggle({
-		Name = "Collect Shiny Relics",
-		CurrentValue = settings.Relics,
-		Flag = "Relics",
+		Name = "Collect Shiny Relics", CurrentValue = settings.Relics, Flag = "Relics",
 		Callback = toggleLoop("Relics", 5, Core.CollectRelics),
 	})
-
 	tabs.auto:CreateButton({
 		Name = "Equip Best Pets",
 		Callback = function() Core.EquipBest() end,
 	})
 
-	tabs.auto:CreateSection("Flags")
+	tabs.auto:CreateSection("Machine")
+	tabs.auto:CreateToggle({
+		Name = "Auto Combine Cards", CurrentValue = settings.CardCombine, Flag = "CardCombine",
+		Callback = toggleLoop("CardCombine", 3, Core.CombineCards),
+	})
+	tabs.auto:CreateToggle({
+		Name = "Auto Fuse Pets (Rainbow/Golden/Shiny)", CurrentValue = settings.FusePets, Flag = "FusePets",
+		Callback = toggleLoop("FusePets", 5, Core.FusePets),
+	})
+	tabs.auto:CreateToggle({
+		Name = "Auto Gold Machine", CurrentValue = settings.GoldMachine, Flag = "GoldMachine",
+		Callback = toggleLoop("GoldMachine", 5, Core.GoldMachine),
+	})
+	tabs.auto:CreateToggle({
+		Name = "Auto Rainbow Machine", CurrentValue = settings.RainbowMachine, Flag = "RainbowMachine",
+		Callback = toggleLoop("RainbowMachine", 5, Core.RainbowMachine),
+	})
 
+	tabs.auto:CreateSection("Spawn")
+	tabs.auto:CreateToggle({
+		Name = "Auto Coin Jar", CurrentValue = settings.CoinJar, Flag = "CoinJar",
+		Callback = toggleLoop("CoinJar", 5, Core.CoinJar),
+	})
+	tabs.auto:CreateToggle({
+		Name = "Auto Comet", CurrentValue = settings.Comet, Flag = "Comet",
+		Callback = toggleLoop("Comet", 5, Core.Comet),
+	})
+
+	tabs.auto:CreateSection("Flags")
 	local initialFlag = settings.SelectedFlag
 	if not table.find(FLAGS, initialFlag) then
 		initialFlag = FLAGS[1]
 		settings.SelectedFlag = initialFlag
 		queueSave()
 	end
-
 	tabs.auto:CreateDropdown({
-		Name = "Select Flag To Use",
-		Options = FLAGS,
-		CurrentOption = { initialFlag },
-		MultipleOptions = false,
-		Flag = "SelectedFlag",
+		Name = "Select Flag To Use", Options = FLAGS,
+		CurrentOption = { initialFlag }, MultipleOptions = false, Flag = "SelectedFlag",
 		Callback = function(option)
 			settings.SelectedFlag = option[1]
 			queueSave()
 			vrt.flagWarned = {}
 			vrt.flagDebug = {}
+			vrt.flagInfoWarned = false
 		end,
 	})
-
 	tabs.auto:CreateLabel("Flag Amount = MAX (tự tính theo inventory + game cap)")
-
 	tabs.auto:CreateToggle({
-		Name = "Use Selected Flag",
-		CurrentValue = settings.UseSelectedFlag,
-		Flag = "UseSelectedFlag",
+		Name = "Use Selected Flag", CurrentValue = settings.UseSelectedFlag, Flag = "UseSelectedFlag",
 		Callback = function(value)
 			settings.UseSelectedFlag = value
 			queueSave()
 			vrt.flagWarned = {}
 			vrt.flagDebug = {}
-			if value then
-				startLoop("UseSelectedFlag", 2, Core.ActivateFlag)
-			else
-				stopLoop("UseSelectedFlag")
-			end
+			vrt.flagInfoWarned = false
+			if value then startLoop("UseSelectedFlag", 2, Core.ActivateFlag) else stopLoop("UseSelectedFlag") end
 		end,
 	})
-
 	tabs.auto:CreateButton({
 		Name = "Print Flag Info",
 		Callback = function()
@@ -4340,85 +3972,54 @@ end
 -- ================= UPDATE =================
 if tabs.update then
 	tabs.update:CreateSection("Fruits")
-
 	fruitUpgradeDropdown = tabs.update:CreateDropdown({
 		Name = "Select Fruits To Upgrade",
 		Options = buildOptions(getDirectoryIds("Fruits")),
-		CurrentOption = settings.SelectedFruitUpgrade,
-		MultipleOptions = true,
-		Flag = "SelectedFruitUpgrade",
-		Callback = function(option)
-			settings.SelectedFruitUpgrade = option
-			queueSave()
-		end,
+		CurrentOption = settings.SelectedFruitUpgrade, MultipleOptions = true, Flag = "SelectedFruitUpgrade",
+		Callback = function(option) settings.SelectedFruitUpgrade = option; queueSave() end,
 	})
-
 	tabs.update:CreateToggle({
-		Name = "Upgrade Selected Fruits",
-		CurrentValue = settings.UpgradeFruits,
-		Flag = "UpgradeFruits",
+		Name = "Upgrade Selected Fruits", CurrentValue = settings.UpgradeFruits, Flag = "UpgradeFruits",
 		Callback = toggleLoop("UpgradeFruits", 2, function() Core.UpgradeFruits(false) end),
 	})
-
 	tabs.update:CreateToggle({
-		Name = "Upgrade Shiny Fruits Only",
-		CurrentValue = settings.UpgradeFruitsShiny,
-		Flag = "UpgradeFruitsShiny",
+		Name = "Upgrade Shiny Fruits Only", CurrentValue = settings.UpgradeFruitsShiny, Flag = "UpgradeFruitsShiny",
 		Callback = toggleLoop("UpgradeFruitsShiny", 2, function() Core.UpgradeFruits(true) end),
 	})
-
 	tabs.update:CreateButton({
 		Name = "Upgrade Fruits Now",
 		Callback = function() Core.UpgradeFruits(false) end,
 	})
 
 	tabs.update:CreateSection("Potions")
-
 	tabs.update:CreateToggle({
-		Name = "Upgrade All Potions (Bulk)",
-		CurrentValue = settings.UpgradePotions,
-		Flag = "UpgradePotions",
+		Name = "Upgrade All Potions (Bulk)", CurrentValue = settings.UpgradePotions, Flag = "UpgradePotions",
 		Callback = toggleLoop("UpgradePotions", 2, Core.UpgradePotions),
 	})
-
 	tabs.update:CreateButton({
 		Name = "Upgrade Potions Now",
 		Callback = function() Core.UpgradePotions() end,
 	})
 
 	tabs.update:CreateSection("Enchants")
-
 	enchantRarityDropdown = tabs.update:CreateDropdown({
 		Name = "Select Enchant Rarity",
 		Options = buildOptions(getEnchantRarities()),
-		CurrentOption = settings.SelectedEnchantRarity,
-		MultipleOptions = true,
-		Flag = "SelectedEnchantRarity",
-		Callback = function(option)
-			settings.SelectedEnchantRarity = option
-			queueSave()
-		end,
+		CurrentOption = settings.SelectedEnchantRarity, MultipleOptions = true, Flag = "SelectedEnchantRarity",
+		Callback = function(option) settings.SelectedEnchantRarity = option; queueSave() end,
 	})
-
 	tabs.update:CreateToggle({
-		Name = "Upgrade All Enchants",
-		CurrentValue = settings.UpgradeEnchants,
-		Flag = "UpgradeEnchants",
+		Name = "Upgrade All Enchants", CurrentValue = settings.UpgradeEnchants, Flag = "UpgradeEnchants",
 		Callback = toggleLoop("UpgradeEnchants", 2, Core.UpgradeEnchants),
 	})
-
 	tabs.update:CreateButton({
 		Name = "Upgrade Enchants Now",
 		Callback = function() Core.UpgradeEnchants() end,
 	})
-
 	tabs.update:CreateToggle({
-		Name = "Empower Selected Rarity",
-		CurrentValue = settings.EmpowerEnchants,
-		Flag = "EmpowerEnchants",
+		Name = "Empower Selected Rarity", CurrentValue = settings.EmpowerEnchants, Flag = "EmpowerEnchants",
 		Callback = toggleLoop("EmpowerEnchants", 2, Core.EmpowerEnchants),
 	})
-
 	tabs.update:CreateButton({
 		Name = "Scrap Selected Rarity",
 		Callback = function() Core.ScrapEnchants() end,
@@ -4428,22 +4029,15 @@ end
 -- ================= AUTO-RANK =================
 if tabs.rank then
 	tabs.rank:CreateSection("Ranking Section")
-
 	tabs.rank:CreateToggle({
-		Name = "Auto Claim Rank Rewards",
-		CurrentValue = settings.RankRewards,
-		Flag = "RankRewards",
+		Name = "Auto Claim Rank Rewards", CurrentValue = settings.RankRewards, Flag = "RankRewards",
 		Callback = toggleLoop("RankRewards", 5, Core.ClaimRankRewards),
 	})
-
 	local AUTO_RANK_URL = "https://raw.githubusercontent.com/ryomolochiton/367/refs/heads/main/AutoRank.lua"
-
 	local function loadAutoRank()
 		if vrt.autoRankFunc then return vrt.autoRankFunc end
 		local ok, source = pcall(game.HttpGet, game, AUTO_RANK_URL)
-		if not ok or typeof(source) ~= "string" then
-			return nil, "Không tải được script Auto Rank"
-		end
+		if not ok or typeof(source) ~= "string" then return nil, "Không tải được script Auto Rank" end
 		local chunk, err = loadstring(source, "AutoRank")
 		if not chunk then return nil, "Compile lỗi: " .. tostring(err) end
 		local okRun, result = pcall(chunk)
@@ -4455,7 +4049,6 @@ if tabs.rank then
 		vrt.autoRankFunc = function() end
 		return vrt.autoRankFunc
 	end
-
 	tabs.rank:CreateButton({
 		Name = "Access Auto Rank",
 		Callback = function()
@@ -4467,29 +4060,18 @@ if tabs.rank then
 			})
 		end,
 	})
-
 	tabs.rank:CreateLabel("Auto Rank is free for now.\nlast update: 28.04.2026", "refresh-cw")
-
 	tabs.rank:CreateToggle({
-		Name = "Auto Rank",
-		CurrentValue = settings.AutoRank,
-		Flag = "AutoRank",
+		Name = "Auto Rank", CurrentValue = settings.AutoRank, Flag = "AutoRank",
 		Callback = function(value)
 			settings.AutoRank = value
 			queueSave()
-			if not value then
-				stopLoop("AutoRank")
-				return
-			end
+			if not value then stopLoop("AutoRank"); return end
 			local func, err = loadAutoRank()
 			if not func then
 				settings.AutoRank = false
 				queueSave()
-				rayfield:Notify({
-					Title = "Auto Rank",
-					Content = err or "Load thất bại",
-					Duration = 8,
-				})
+				rayfield:Notify({ Title = "Auto Rank", Content = err or "Load thất bại", Duration = 8 })
 				return
 			end
 			startLoop("AutoRank", 2, func)
@@ -4509,44 +4091,47 @@ if tabs.event then
 			settings.DMAutoJoin = value
 			queueSave()
 			if value then
-				startLoop("DMAutoJoin", 3, function()
-					local instance = ensureDmInstance()
-					if not instance then return end
-					if not instance:getMountain() then
-						instance:joinEvent()
-					end
-				end)
+				startLoop("DMAutoJoin", 5, autoJoinTick)
 			else
 				stopLoop("DMAutoJoin")
 			end
 		end,
 	})
 
-	tabs.event:CreateButton({
-		Name = "Join Diamond Mountain Now",
-		Callback = function()
-			local instance, err = ensureDmInstance()
-			if not instance then
-				rayfield:Notify({
-					Title = "Diamond Mountain",
-					Content = err or "Không tạo được instance",
-					Duration = 8,
-				})
-				return
+	tabs.event:CreateToggle({
+		Name = "Auto Join Now (force join, 1s)",
+		CurrentValue = settings.DMAutoJoinForce or false,
+		Flag = "DMAutoJoinForce",
+		Callback = function(value)
+			settings.DMAutoJoinForce = value
+			queueSave()
+			if value then
+				startLoop("DMAutoJoinForce", 1, autoJoinTick)
+			else
+				stopLoop("DMAutoJoinForce")
 			end
-			local ok, message = instance:joinEvent()
-			rayfield:Notify({
-				Title = "Diamond Mountain",
-				Content = ok and (message or "Đang vào instance...") or (message or "Join thất bại"),
-				Duration = 5,
-			})
 		end,
 	})
 
 	tabs.event:CreateButton({
-		Name = "Leave Instance",
+		Name = "Print Auto Join Debug",
 		Callback = function()
-			fire("Instancing_PlayerLeaveInstance", "DiamondMountain")
+			local info = getInstanceInfo()
+			print("[VRT] Auto Join Debug:")
+			print("  DMAutoJoin setting:", tostring(settings.DMAutoJoin))
+			print("  DMAutoJoinForce setting:", tostring(settings.DMAutoJoinForce))
+			print("  Loop 5s running:", tostring(vrt.loops["DMAutoJoin"] ~= nil))
+			print("  Loop 1s running:", tostring(vrt.loops["DMAutoJoinForce"] ~= nil))
+			print("  InstanceId:", tostring(info and info.InstanceId))
+			print("  AreaId:", tostring(info and info.AreaId))
+			local root = getRoot()
+			print("  Character ready:", tostring(root ~= nil))
+			local instance = vrt.dmInstance
+			print("  DM instance:", tostring(instance ~= nil))
+			if instance then
+				local mountain = instance:getMountain()
+				print("  getMountain():", tostring(mountain ~= nil))
+			end
 		end,
 	})
 
@@ -4575,20 +4160,14 @@ if tabs.event then
 				rayfield:Notify({ Title = "VRT", Content = "Không tìm thấy nhân vật", Duration = 3 })
 				return
 			end
-			settings.DMFarmPoint = {
-				x = root.Position.X,
-				y = root.Position.Y,
-				z = root.Position.Z,
-			}
+			settings.DMFarmPoint = { x = root.Position.X, y = root.Position.Y, z = root.Position.Z }
 			queueSave()
 			if vrt.dmInstance then
 				pcall(function() vrt.dmInstance:setFarmPoint(settings.DMFarmPoint) end)
 			end
 			rayfield:Notify({
 				Title = "DM Farm Point",
-				Content = ("Đã lưu (%.0f, %.0f, %.0f)"):format(
-					root.Position.X, root.Position.Y, root.Position.Z
-				),
+				Content = ("Đã lưu (%.0f, %.0f, %.0f)"):format(root.Position.X, root.Position.Y, root.Position.Z),
 				Duration = 4,
 			})
 		end,
@@ -4757,34 +4336,24 @@ end
 -- ================= ADMIN ABUSE =================
 if tabs.secret then
 	tabs.secret:CreateSection("Admin Abuse Section")
-
 	tabs.secret:CreateToggle({
-		Name = "Auto Claim Hidden Exclusive Egg",
-		CurrentValue = settings.AdminAbuse or false,
-		Flag = "AdminAbuse",
+		Name = "Auto Claim Hidden Exclusive Egg", CurrentValue = settings.AdminAbuse or false, Flag = "AdminAbuse",
 		Callback = function(value)
 			settings.AdminAbuse = value
 			queueSave()
-			if value then
-				startLoop("AdminAbuse", 5, Core.ClaimFakeCharacters)
-			else
-				stopLoop("AdminAbuse")
-			end
+			if value then startLoop("AdminAbuse", 5, Core.ClaimFakeCharacters) else stopLoop("AdminAbuse") end
 		end,
 	})
-
 	tabs.secret:CreateButton({
 		Name = "Claim Hidden Exclusive Egg (Once)",
 		Callback = function() Core.ClaimFakeCharacters() end,
 	})
-
 	tabs.secret:CreateButton({
 		Name = "Claim Rank Rewards Now",
 		Callback = function() Core.ClaimRankRewards() end,
 	})
 
 	tabs.secret:CreateSection("Anti-Cheat")
-
 	tabs.secret:CreateButton({
 		Name = "Print AC Status",
 		Callback = function()
@@ -4795,21 +4364,13 @@ if tabs.secret then
 				print(("[VRT] Last blocked: %s"):format(tostring(AntiCheat.lastBlocked.message)))
 			end
 			local clean, issues = reqCheck()
-			print(("[VRT] Request clean: %s | issues: %s"):format(
-				tostring(clean), table.concat(issues, ",")
-			))
+			print(("[VRT] Request clean: %s | issues: %s"):format(tostring(clean), table.concat(issues, ",")))
 		end,
 	})
-
 	tabs.secret:CreateToggle({
-		Name = "Log Blocked AC Messages",
-		CurrentValue = false,
-		Flag = "ACLogBlocked",
-		Callback = function(value)
-			AntiCheat.logBlocked = value
-		end,
+		Name = "Log Blocked AC Messages", CurrentValue = false, Flag = "ACLogBlocked",
+		Callback = function(value) AntiCheat.logBlocked = value end,
 	})
-
 	tabs.secret:CreateButton({
 		Name = "Reinstall Blunder Bypass",
 		Callback = function()
@@ -4824,7 +4385,6 @@ if tabs.secret then
 	})
 
 	tabs.secret:CreateSection("Performance")
-
 	tabs.secret:CreateButton({
 		Name = "Print Cache Stats",
 		Callback = function()
@@ -4833,9 +4393,7 @@ if tabs.secret then
 			if save and typeof(save.Inventory) == "table" then
 				for _, bucket in pairs(save.Inventory) do
 					if typeof(bucket) == "table" then
-						for _ in pairs(bucket) do
-							inventorySize += 1
-						end
+						for _ in pairs(bucket) do inventorySize += 1 end
 					end
 				end
 			end
@@ -4843,7 +4401,7 @@ if tabs.secret then
 			print(("[VRT] Inventory size: %d"):format(inventorySize))
 			print(("[VRT] Breakables cached: %d"):format(BreakablePositions.data and #BreakablePositions.data or 0))
 			print(("[VRT] Eggs cached: %d"):format(EggPositions.data and #EggPositions.data or 0))
-			print(("[VRT] Pets cached: %d"):format(PetsCache.data and #PetsCache.data or 0))
+			print(("[VRT] ClickAura in range: %d"):format(#clickAuraCache.names))
 			print(("[VRT] Active loops: %d"):format((function()
 				local n = 0
 				for _ in pairs(vrt.loops) do n += 1 end
@@ -4857,15 +4415,12 @@ if tabs.secret then
 			end
 		end,
 	})
-
 	tabs.secret:CreateButton({
 		Name = "Clear All Caches",
 		Callback = function()
 			invalidateSaveCache()
 			clearDirectoryCache()
 			clearDerivedCache()
-			PetsCache.data = nil
-			PetsCache.timestamp = 0
 			BreakablePositions.data = nil
 			BreakablePositions.timestamp = 0
 			breakablePositionCache = setmetatable({}, { __mode = "k" })
@@ -4874,6 +4429,9 @@ if tabs.secret then
 			eggPositionCache = setmetatable({}, { __mode = "k" })
 			ZoneCache.data = nil
 			ZoneCache.timestamp = 0
+			clickAuraCache.names = {}
+			clickAuraCache.rootPos = nil
+			clickAuraCache.timestamp = 0
 			rayfield:Notify({ Title = "VRT", Content = "Đã xoá tất cả cache", Duration = 3 })
 		end,
 	})
@@ -4882,44 +4440,27 @@ end
 -- ================= MAILBOX =================
 if tabs.mailbox then
 	tabs.mailbox:CreateInput({
-		Name = "Input Username",
-		PlaceholderText = "Input Username",
-		CurrentValue = settings.MailboxUsername,
-		RemoveTextAfterFocusLost = false,
-		Flag = "MailboxUsername",
-		Callback = function(value)
-			settings.MailboxUsername = value
-			queueSave()
-		end,
+		Name = "Input Username", PlaceholderText = "Input Username",
+		CurrentValue = settings.MailboxUsername, RemoveTextAfterFocusLost = false, Flag = "MailboxUsername",
+		Callback = function(value) settings.MailboxUsername = value; queueSave() end,
 	})
-
 	tabs.mailbox:CreateDropdown({
-		Name = "Send Huges Mode",
-		Options = { "New", "All" },
-		CurrentOption = { settings.MailboxHugeMode },
-		MultipleOptions = false,
-		Flag = "MailboxHugeMode",
+		Name = "Send Huges Mode", Options = { "New", "All" },
+		CurrentOption = { settings.MailboxHugeMode }, MultipleOptions = false, Flag = "MailboxHugeMode",
 		Callback = function(option)
 			settings.MailboxHugeMode = option[1]
 			vrt.sentHuges = {}
 			queueSave()
 		end,
 	})
-
 	tabs.mailbox:CreateToggle({
-		Name = "Send Huges By Mode",
-		CurrentValue = settings.MailboxSendHuges,
-		Flag = "MailboxSendHuges",
+		Name = "Send Huges By Mode", CurrentValue = settings.MailboxSendHuges, Flag = "MailboxSendHuges",
 		Callback = toggleLoop("MailboxSendHuges", 10, Core.MailboxSendHuges),
 	})
-
 	tabs.mailbox:CreateToggle({
-		Name = "Auto Claim Mailbox",
-		CurrentValue = settings.MailboxClaim,
-		Flag = "MailboxClaim",
+		Name = "Auto Claim Mailbox", CurrentValue = settings.MailboxClaim, Flag = "MailboxClaim",
 		Callback = toggleLoop("MailboxClaim", 10, Core.MailboxClaimAll),
 	})
-
 	tabs.mailbox:CreateButton({
 		Name = "Claim All Now",
 		Callback = function()
@@ -4927,7 +4468,6 @@ if tabs.mailbox then
 			rayfield:Notify({ Title = "VRT", Content = "Claiming mailbox...", Duration = 3 })
 		end,
 	})
-
 	tabs.mailbox:CreateButton({
 		Name = "Reset Sent Huges",
 		Callback = function()
@@ -4937,26 +4477,18 @@ if tabs.mailbox then
 	})
 
 	tabs.mailbox:CreateSection("Config")
-
 	tabs.mailbox:CreateButton({
 		Name = "Save Config Now",
 		Callback = function()
 			saveConfig()
-			rayfield:Notify({
-				Title = "Config",
-				Content = "Đã lưu vào " .. CONFIG_PATH,
-				Duration = 4,
-			})
+			rayfield:Notify({ Title = "Config", Content = "Đã lưu vào " .. CONFIG_PATH, Duration = 4 })
 		end,
 	})
-
 	tabs.mailbox:CreateButton({
 		Name = "Reset Config",
 		Callback = function()
 			pcall(function()
-				if isfile(CONFIG_PATH) then
-					delfile(CONFIG_PATH)
-				end
+				if isfile(CONFIG_PATH) then delfile(CONFIG_PATH) end
 			end)
 			rayfield:Notify({
 				Title = "Config",
@@ -4977,6 +4509,18 @@ task.spawn(function()
 end)
 
 -- -----------------------------------------------------
+-- Invalidate breakable cache on new breakable
+-- -----------------------------------------------------
+do
+	local brkFolder = getBreakableFolder()
+	if brkFolder then
+		brkFolder.ChildAdded:Connect(function()
+			BreakablePositions.timestamp = 0
+		end)
+	end
+end
+
+-- -----------------------------------------------------
 -- Apply saved toggles
 -- -----------------------------------------------------
 task.spawn(function()
@@ -4986,116 +4530,50 @@ task.spawn(function()
 		bindConnection("FastFarmHeartbeat", runService.Heartbeat, Core.FastFarm)
 	end
 	if settings.ClickAura then
-		bindConnection("ClickAura", runService.Heartbeat, Core.ClickAura, 0.05)
+		bindConnection("ClickAura", runService.Heartbeat, Core.ClickAura, settings.ClickAuraCooldown or 0.016)
 	end
-	if settings.FastFarmLoop then
-		startLoop("FastFarmLoop", 0.15, Core.FastFarm)
-	end
-	if settings.CollectOrbs then
-		startLoop("CollectOrbs", 0.3, Core.CollectOrbs)
-	end
-	if settings.ClickAuraViz then
-		startLoop("ClickAuraViz", 0.1, Core.ClickAuraViz)
-	end
-	if settings.OptimizePets then
-		startLoop("OptimizePets", 10, Core.OptimizePets)
-	end
-	if settings.SpinWheels then
-		startLoop("SpinWheels", 0.35, Core.SpinWheels)
-	end
-	if settings.OpenChests then
-		startLoop("OpenChests", 1, Core.OpenChests)
-	end
-	if settings.CombineKeysAll then
-		startLoop("CombineKeysAll", 3, Core.CombineKeysAll)
-	end
-	if settings.CombineKeysOnce then
-		startLoop("CombineKeysOnce", 1.5, Core.CombineKeysOnce)
-	end
-	if settings.OpenGifts then
-		startLoop("OpenGifts", 1, Core.OpenGiftBags)
-	end
-	if settings.OpenLootboxes then
-		startLoop("OpenLootboxes", 1.5, Core.OpenLootboxes)
-	end
-	if settings.ConsumeFruits then
-		startLoop("ConsumeFruits", 3, Core.ConsumeFruits)
-	end
-	if settings.FarmTreehouse then
-		startLoop("FarmTreehouse", 5, Core.FarmTreehouse)
-	end
-	if settings.OpenEgg then
-		startLoop("OpenEgg", 0.3, Core.OpenEgg)
-	end
-	if settings.OpenSelectedEgg then
-		startLoop("OpenSelectedEgg", 0.3, Core.OpenSelectedEgg)
-	end
-	if settings.BuySelectedCustomEgg then
-		startLoop("BuySelectedCustomEgg", 0.6, Core.BuySelectedCustomEgg)
-	end
-	if settings.Daycare then
-		startLoop("Daycare", 30, Core.Daycare)
-	end
-	if settings.PetSlots then
-		startLoop("PetSlots", 10, Core.BuyPetSlots)
-	end
-	if settings.AutoEggSlots then
-		startLoop("AutoEggSlots", 10, Core.BuyEggSlots)
-	end
-	if settings.Zones then
-		startLoop("Zones", 2, Core.BuyZone)
-	end
-	if settings.Ultimate then
-		startLoop("Ultimate", 2, Core.UseUltimate)
-	end
-	if settings.FreeGifts then
-		startLoop("FreeGifts", 60, Core.ClaimFreeGifts)
-	end
-	if settings.Relics then
-		startLoop("Relics", 5, Core.CollectRelics)
-	end
-	if settings.RankRewards then
-		startLoop("RankRewards", 5, Core.ClaimRankRewards)
-	end
-	if settings.UpgradeFruits then
-		startLoop("UpgradeFruits", 2, function() Core.UpgradeFruits(false) end)
-	end
-	if settings.UpgradeFruitsShiny then
-		startLoop("UpgradeFruitsShiny", 2, function() Core.UpgradeFruits(true) end)
-	end
-	if settings.UpgradePotions then
-		startLoop("UpgradePotions", 2, Core.UpgradePotions)
-	end
-	if settings.UpgradeEnchants then
-		startLoop("UpgradeEnchants", 2, Core.UpgradeEnchants)
-	end
-	if settings.EmpowerEnchants then
-		startLoop("EmpowerEnchants", 2, Core.EmpowerEnchants)
-	end
-	if settings.MailboxSendHuges then
-		startLoop("MailboxSendHuges", 10, Core.MailboxSendHuges)
-	end
-	if settings.MailboxClaim then
-		startLoop("MailboxClaim", 10, Core.MailboxClaimAll)
-	end
-	if settings.InfinitePetSpeed then
-		Core.InfinitePetSpeed(true)
-	end
-	if settings.UseSelectedFlag then
-		startLoop("UseSelectedFlag", 2, Core.ActivateFlag)
-	end
-	if settings.AdminAbuse then
-		startLoop("AdminAbuse", 5, Core.ClaimFakeCharacters)
-	end
-	if settings.DMAutoJoin then
-		startLoop("DMAutoJoin", 3, function()
-			local instance = ensureDmInstance()
-			if not instance then return end
-			if not instance:getMountain() then
-				instance:joinEvent()
-			end
-		end)
-	end
+	if settings.FastFarmLoop then startLoop("FastFarmLoop", 0.15, Core.FastFarm) end
+	if settings.CollectOrbs then startLoop("CollectOrbs", 0.3, Core.CollectOrbs) end
+	if settings.ClickAuraViz then startLoop("ClickAuraViz", 0.1, Core.ClickAuraViz) end
+	if settings.OptimizePets then startLoop("OptimizePets", 10, Core.OptimizePets) end
+	if settings.SpinWheels then startLoop("SpinWheels", 0.35, Core.SpinWheels) end
+	if settings.OpenChests then startLoop("OpenChests", 1, Core.OpenChests) end
+	if settings.CombineKeysAll then startLoop("CombineKeysAll", 3, Core.CombineKeysAll) end
+	if settings.CombineKeysOnce then startLoop("CombineKeysOnce", 1.5, Core.CombineKeysOnce) end
+	if settings.OpenGifts then startLoop("OpenGifts", 1, Core.OpenGiftBags) end
+	if settings.OpenLootboxes then startLoop("OpenLootboxes", 1.5, Core.OpenLootboxes) end
+	if settings.ConsumeFruits then startLoop("ConsumeFruits", 3, Core.ConsumeFruits) end
+	if settings.FarmTreehouse then startLoop("FarmTreehouse", 5, Core.FarmTreehouse) end
+	if settings.OpenEgg then startLoop("OpenEgg", 0.3, Core.OpenEgg) end
+	if settings.OpenSelectedEgg then startLoop("OpenSelectedEgg", 0.3, Core.OpenSelectedEgg) end
+	if settings.BuySelectedCustomEgg then startLoop("BuySelectedCustomEgg", 0.6, Core.BuySelectedCustomEgg) end
+	if settings.Daycare then startLoop("Daycare", 30, Core.Daycare) end
+	if settings.PetSlots then startLoop("PetSlots", 10, Core.BuyPetSlots) end
+	if settings.AutoEggSlots then startLoop("AutoEggSlots", 10, Core.BuyEggSlots) end
+	if settings.Zones then startLoop("Zones", 2, Core.BuyZone) end
+	if settings.Rebirth then startLoop("Rebirth", 5, Core.Rebirth) end
+	if settings.Ultimate then startLoop("Ultimate", 2, Core.UseUltimate) end
+	if settings.FreeGifts then startLoop("FreeGifts", 60, Core.ClaimFreeGifts) end
+	if settings.Relics then startLoop("Relics", 5, Core.CollectRelics) end
+	if settings.RankRewards then startLoop("RankRewards", 5, Core.ClaimRankRewards) end
+	if settings.UpgradeFruits then startLoop("UpgradeFruits", 2, function() Core.UpgradeFruits(false) end) end
+	if settings.UpgradeFruitsShiny then startLoop("UpgradeFruitsShiny", 2, function() Core.UpgradeFruits(true) end) end
+	if settings.UpgradePotions then startLoop("UpgradePotions", 2, Core.UpgradePotions) end
+	if settings.UpgradeEnchants then startLoop("UpgradeEnchants", 2, Core.UpgradeEnchants) end
+	if settings.EmpowerEnchants then startLoop("EmpowerEnchants", 2, Core.EmpowerEnchants) end
+	if settings.CardCombine then startLoop("CardCombine", 3, Core.CombineCards) end
+	if settings.FusePets then startLoop("FusePets", 5, Core.FusePets) end
+	if settings.GoldMachine then startLoop("GoldMachine", 5, Core.GoldMachine) end
+	if settings.RainbowMachine then startLoop("RainbowMachine", 5, Core.RainbowMachine) end
+	if settings.CoinJar then startLoop("CoinJar", 5, Core.CoinJar) end
+	if settings.Comet then startLoop("Comet", 5, Core.Comet) end
+	if settings.MailboxSendHuges then startLoop("MailboxSendHuges", 10, Core.MailboxSendHuges) end
+	if settings.MailboxClaim then startLoop("MailboxClaim", 10, Core.MailboxClaimAll) end
+	if settings.InfinitePetSpeed then Core.InfinitePetSpeed(true) end
+	if settings.UseSelectedFlag then startLoop("UseSelectedFlag", 2, Core.ActivateFlag) end
+	if settings.AdminAbuse then startLoop("AdminAbuse", 5, Core.ClaimFakeCharacters) end
+	if settings.DMAutoJoin then startLoop("DMAutoJoin", 5, autoJoinTick) end
+	if settings.DMAutoJoinForce then startLoop("DMAutoJoinForce", 1, autoJoinTick) end
 
 	print("[VRT] Config restored.")
 end)
@@ -5145,7 +4623,6 @@ getgenv().VRT_Unload = function()
 	end
 
 	pcall(saveConfig)
-
 	pcall(function() notifyGui:Destroy() end)
 	pcall(function() rayfield:Destroy() end)
 	print("[VRT] Unloaded.")
