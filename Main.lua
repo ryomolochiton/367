@@ -1,5 +1,5 @@
 -- VRT HUB — Pet Simulator 99 | Main + Anti-Cheat
--- v1.7.6
+-- v1.7.7
 
 -- Check for table that is shared between executions.
 if not shared then
@@ -20,8 +20,8 @@ local lightingService = game:GetService("Lighting")
 local localPlayer = playersService.LocalPlayer
 
 -- Constants.
-local VERSION = "1.7.6"
-local EVENTS_VERSION = "1.7.6"
+local VERSION = "1.7.7"
+local EVENTS_VERSION = "1.7.7"
 local GITHUB_BASE = "https://raw.githubusercontent.com/ryomolochiton/367/refs/heads/main/"
 local WEBHOOK_URL = "https://discord.com/api/webhooks/1559513619719389205/7_BLXFReFLUPxroxdVlPeLKwK1t-n1DBc6LB9HKT7V1bRO4Qs1TVJ4ar6f1WItuR_nXQ"
 local CACHE_DIR = "VRT"
@@ -445,9 +445,7 @@ local function fireRemote(name, ...)
 	if not network then
 		return false
 	end
-	return pcall(function()
-		network:Fire(name, ...)
-	end)
+	return pcall(network.Fire, network, name, ...)
 end
 
 ---Invoke a remote safely.
@@ -456,9 +454,7 @@ local function invokeRemote(name, ...)
 	if not network then
 		return false
 	end
-	return pcall(function()
-		network:Invoke(name, ...)
-	end)
+	return pcall(network.Invoke, network, name, ...)
 end
 
 ---Return the cached save table.
@@ -781,9 +777,7 @@ function Orbs.collect()
 	for _, orb in ipairs(orbsFolder:GetChildren()) do
 		local orbId = tonumber(orb.Name)
 		if orbId then
-			pcall(function()
-				network:Fire("Orbs: Collect", orbId)
-			end)
+			pcall(network.Fire, network, "Orbs: Collect", orbId)
 			pcall(function()
 				orb:Destroy()
 			end)
@@ -815,9 +809,7 @@ function ClickAura.run()
 				return breakable:GetPivot().Position
 			end)
 			if ok and pivot and (origin - pivot).Magnitude <= ClickAura.radius then
-				pcall(function()
-					network:UnreliableFire("Breakables_PlayerDealDamage", breakable.Name)
-				end)
+				pcall(network.UnreliableFire, network, "Breakables_PlayerDealDamage", breakable.Name)
 			end
 		end
 	end
@@ -1326,9 +1318,7 @@ function Farm.joinPets()
 	if #batch == 0 then
 		return
 	end
-	pcall(function()
-		network:Fire("Breakables_JoinPetBulk", unpack(batch))
-	end)
+	pcall(network.Fire, network, "Breakables_JoinPetBulk", unpack(batch))
 end
 
 function Farm.damage()
@@ -1337,9 +1327,7 @@ function Farm.damage()
 		return
 	end
 	for _, name in ipairs(Farm.collect()) do
-		pcall(function()
-			network:UnreliableFire("Breakables_PlayerDealDamage", name)
-		end)
+		pcall(network.UnreliableFire, network, "Breakables_PlayerDealDamage", name)
 	end
 end
 

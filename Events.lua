@@ -1,8 +1,8 @@
 -- VRT HUB — Events module (Diamond Mountain + Time Trial)
--- v1.7.6
+-- v1.7.7
 
 local Events = {}
-Events.VERSION = "1.7.6"
+Events.VERSION = "1.7.7"
 Events.__index = Events
 
 -- Constants.
@@ -114,9 +114,7 @@ function DiamondMountain:fire(name, ...)
 	if not network then
 		return false
 	end
-	return pcall(function()
-		network:Fire(name, ...)
-	end)
+	return pcall(network.Fire, network, name, ...)
 end
 
 ---Invoke a remote safely.
@@ -125,9 +123,7 @@ function DiamondMountain:invoke(name, ...)
 	if not network then
 		return false
 	end
-	return pcall(function()
-		network:Invoke(name, ...)
-	end)
+	return pcall(network.Invoke, network, name, ...)
 end
 
 ---Return every breakable inside the mountain folder.
@@ -157,9 +153,7 @@ function DiamondMountain:damageBreakables(filter)
 					return breakable:GetPivot().Position
 				end)
 				if ok and pivot and (origin - pivot).Magnitude <= DM_FARM_RADIUS then
-					pcall(function()
-						network:UnreliableFire("Breakables_PlayerDealDamage", breakable.Name)
-					end)
+					pcall(network.UnreliableFire, network, "Breakables_PlayerDealDamage", breakable.Name)
 				end
 			end
 		end
