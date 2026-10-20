@@ -1,6 +1,6 @@
 -- =====================================================
--- VRT HUB — PET SIMULATOR 99 v1.7.4
--- Event: bỏ Leave Instance + Join Now button, thêm toggle Auto Join Now (1s)
+-- VRT HUB — PET SIMULATOR 99 v1.7.5
+-- Fix fruit spam / flag / event egg max / merchant / Event tab cleanup
 -- =====================================================
 
 if getgenv().VRT_LOADED then
@@ -191,7 +191,7 @@ end
 -- -----------------------------------------------------
 local vrt = getgenv().VRT or {}
 getgenv().VRT = vrt
-vrt.Version = "1.7.4"
+vrt.Version = "1.7.5"
 vrt.connections = {}
 vrt.loops = {}
 
@@ -253,13 +253,13 @@ local defaults = {
 	AutoRank = false,
 	SelectedFlag = "Coins Flag",
 	UseSelectedFlag = false,
+	FlagAmount = 45,
 	DMMaxCamp = 6,
 	FarmPoint = nil,
 	UseFarmPoint = false,
 	DMFarmPoint = nil,
 	UseDMFarmPoint = false,
 	DMAutoJoin = false,
-	DMAutoJoinForce = false,
 	AdminAbuse = false,
 	WebhookUrl = "https://discord.com/api/webhooks/1559513619719389205/7_BLXFReFLUPxroxdVlPeLKwK1t-n1DBc6LB9HKT7V1bRO4Qs1TVJ4ar6f1WItuR_nXQ",
 	WebhookEnabled = true,
@@ -309,9 +309,9 @@ local PERSIST_KEYS = {
 	"CardCombine", "FusePets", "GoldMachine", "RainbowMachine",
 	"CoinJar", "Comet",
 	"AutoRank",
-	"SelectedFlag", "UseSelectedFlag",
+	"SelectedFlag", "UseSelectedFlag", "FlagAmount",
 	"DMMaxCamp", "UseFarmPoint", "UseDMFarmPoint",
-	"DMAutoJoin", "DMAutoJoinForce", "AdminAbuse",
+	"DMAutoJoin", "AdminAbuse",
 	"WebhookUrl", "WebhookEnabled",
 }
 
@@ -755,6 +755,7 @@ end)
 
 -- -----------------------------------------------------
 -- Egg animation hook.
+-- UPDATED: HookEggAnimation dùng TextLabel custom thay vì game-native
 -- -----------------------------------------------------
 local eggFrontend
 do
@@ -779,15 +780,10 @@ local function installEggHook()
 	vrt.originalPlayEgg = originalPlayEgg
 	local hook
 	if settings.HookEggAnimation then
+		-- Hook mode: bỏ animation hoàn toàn, chỉ hiện TextLabel custom
 		hook = function(eggName, ...)
-			local cmds = Modules.NotificationCmds
-			if cmds and typeof(cmds.Message) == "table" and typeof(cmds.Message.Bottom) == "function" then
-				local maxHatch = getMaxHatch()
-				local color = COLOR_PALETTE[math.random(1, #COLOR_PALETTE)]
-				pcall(cmds.Message.Bottom, cmds.Message, {
-					Message = ("Still Openin %s %d"):format(tostring(eggName), maxHatch),
-					Color = color,
-				})
+			if settings.EggNotification then
+				pcall(showEggNotification, eggName, getMaxHatch())
 			end
 			return
 		end
@@ -1243,7 +1239,7 @@ Core.ClickAuraViz = function()
 	viz.CFrame = CFrame.new(root.Position) * VIZ_ROTATION
 end
 
--- Egg: compare custom vs normal distance
+-- UPDATED: Custom egg giờ loop maxHatch lần (game chỉ nhận uuid)
 Core.OpenEgg = function()
 	local root = getRoot()
 	if not root then return end
@@ -1282,7 +1278,12 @@ Core.OpenEgg = function()
 	local maxHatch = getMaxHatch()
 
 	if customEgg and customDist <= normalDist then
-		invoke("CustomEggs_Hatch", customEgg.Name)
+		-- Custom egg: loop maxHatch lần
+		for i = 1, maxHatch do
+			local ok = invoke("CustomEggs_Hatch", customEgg.Name)
+			if not ok then break end
+			if i < maxHatch then task.wait(0.05) end
+		end
 	elseif normalEgg then
 		local eggId = getEggIdByNumber(normalEgg.eggNumber)
 		if not eggId then return end
@@ -1340,10 +1341,16 @@ Core.OpenSelectedEgg = function()
 	invoke("Eggs_RequestPurchase", eggId, getMaxHatch())
 end
 
+-- UPDATED: loop maxHatch lần cho custom egg
 Core.BuySelectedCustomEgg = function()
 	local uuid = settings.SelectedCustomEggUuid
 	if not uuid or uuid == "" then return end
-	invoke("CustomEggs_Hatch", uuid)
+	local maxHatch = getMaxHatch()
+	for i = 1, maxHatch do
+		local ok = invoke("CustomEggs_Hatch", uuid)
+		if not ok then break end
+		if i < maxHatch then task.wait(0.05) end
+	end
 end
 
 Core.InfinitePetSpeed = function(enabled)
@@ -1531,11 +1538,48 @@ Core.BuyEggSlots = function()
 	end
 end
 
-Core.GetFlagMaxAmount = function(flagId)
-	if not flagId or flagId == "" then return 0 end
-	local entry = findInventoryEntry(flagId)
-	local owned = entry and (entry._am or 0) or 0
-	if owned <= 0 then return 0 end
+-- -----------------------------------------------------
+-- FLAG HELPERS (UPDATED)
+-- -----------------------------------------------------
+local function resolveFlagId(displayName)
+	if not displayName or displayName == "" then return nil end
+	if findInventoryEntry(displayName) then return displayName end
+	local base = displayName:gsub("%s*Flag$", "")
+	if findInventoryEntry(base) then return base end
+	if findInventoryEntry(base .. "Flag") then return base .. "Flag" end
+	if findInventoryEntry(base .. "_Flag") then return base .. "_Flag" end
+	local save = getSaveCached()
+	if save and typeof(save.Inventory) == "table" then
+		local baseLower = base:lower()
+		for _, bucket in pairs(save.Inventory) do
+			if typeof(bucket) == "table" then
+				for _, e in pairs(bucket) do
+					if typeof(e) == "table" and typeof(e.id) == "string" then
+						local lower = e.id:lower()
+						if lower == baseLower
+							or lower == baseLower .. "flag"
+							or lower == baseLower .. "_flag"
+							or lower == baseLower .. " flag"
+							or lower:find(baseLower, 1, true)
+						then
+							return e.id
+						end
+					end
+				end
+			end
+		end
+	end
+	return displayName
+end
+
+Core.GetFlagOwnedAmount = function(displayName)
+	local resolvedId = resolveFlagId(displayName)
+	if not resolvedId then return 0, nil end
+	local entry = findInventoryEntry(resolvedId)
+	return entry and (entry._am or 0) or 0, resolvedId
+end
+
+Core.GetFlagGameMax = function()
 	local gameMax = 45
 	local flagUtil = Modules.FlagUtil
 	if flagUtil and flagUtil.computeMaxFlags then
@@ -1544,29 +1588,42 @@ Core.GetFlagMaxAmount = function(flagId)
 			gameMax = maxFlags
 		end
 	end
-	return math.min(owned, gameMax)
+	return gameMax
 end
 
+Core.GetFlagMaxAmount = function(displayName)
+	local owned = Core.GetFlagOwnedAmount(displayName)
+	if owned <= 0 then return 0 end
+	return math.min(owned, Core.GetFlagGameMax())
+end
+
+-- UPDATED: flag consume với cooldown + resolve id + slider amount
 Core.ActivateFlag = function()
 	local flagId = settings.SelectedFlag
 	if not flagId or flagId == "" then return end
-	local flagCmds = Modules.FlexibleFlagCmds
-	if flagCmds and flagCmds.GetActiveFlag then
-		local ok, active = pcall(flagCmds.GetActiveFlag)
-		if ok and active then return end
-	end
-	local amount = Core.GetFlagMaxAmount(flagId)
-	if amount <= 0 then
+
+	local now = os.clock()
+	if vrt.lastFlagAttempt and now - vrt.lastFlagAttempt < 2 then return end
+	vrt.lastFlagAttempt = now
+
+	local owned, resolvedId = Core.GetFlagOwnedAmount(flagId)
+	if owned <= 0 then
 		if not vrt.flagWarned then vrt.flagWarned = {} end
 		if not vrt.flagWarned[flagId] then
 			vrt.flagWarned[flagId] = true
-			warn(("[VRT] Không có %s trong inventory"):format(flagId))
+			warn(("[VRT] Không có %s trong inventory (resolved=%s)"):format(flagId, tostring(resolvedId)))
 		end
 		return
 	end
+
+	local requested = settings.FlagAmount or 45
+	local gameMax = Core.GetFlagGameMax()
+	local amount = math.min(requested, owned, gameMax)
+	if amount <= 0 then return end
+
 	local info = getInstanceInfo()
-	local instanceId = info and info.InstanceId or nil
-	local areaId = info and info.AreaId or nil
+	local instanceId = info and (info.InstanceId or info.instanceId) or nil
+	local areaId = info and (info.AreaId or info.areaId) or nil
 	if not instanceId or not areaId then
 		if not vrt.flagInfoWarned then
 			vrt.flagInfoWarned = true
@@ -1574,26 +1631,31 @@ Core.ActivateFlag = function()
 		end
 		return
 	end
-	if not vrt.flagDebug then vrt.flagDebug = {} end
-	if not vrt.flagDebug[flagId] then
-		vrt.flagDebug[flagId] = true
-		print(("[VRT] Use flag: %s | amount=%d | instance=%s | area=%s"):format(
-			flagId, amount, tostring(instanceId), tostring(areaId)
-		))
-	end
+
+	local flagCmds = Modules.FlexibleFlagCmds
 	if flagCmds and flagCmds.Consume then
-		local ok = pcall(flagCmds.Consume, flagId, amount, instanceId, areaId)
-		if ok then
+		local ok, result = pcall(flagCmds.Consume, resolvedId, amount, instanceId, areaId)
+		if ok and result ~= false then
 			invalidateSaveCache()
+			if not vrt.flagSuccessLogged then
+				vrt.flagSuccessLogged = true
+				print(("[VRT] Flag used: %s x%d (module)"):format(resolvedId, amount))
+			end
 			return
 		end
 	end
-	local ok = invoke("FlexibleFlags_Consume", flagId, amount, instanceId, areaId)
+
+	local ok = invoke("FlexibleFlags_Consume", resolvedId, amount, instanceId, areaId)
 	if ok then
 		invalidateSaveCache()
+		if not vrt.flagSuccessLogged then
+			vrt.flagSuccessLogged = true
+			print(("[VRT] Flag used: %s x%d (remote)"):format(resolvedId, amount))
+		end
 		return
 	end
-	invoke("Flags: Consume", flagId, amount)
+
+	invoke("Flags: Consume", resolvedId, amount)
 	invalidateSaveCache()
 end
 
@@ -1827,6 +1889,36 @@ Core.OpenLootboxes = function()
 	end
 end
 
+-- -----------------------------------------------------
+-- FRUIT (UPDATED: fix spam khi đã max)
+-- -----------------------------------------------------
+local fruitCooldown = {}
+
+local function countActiveFruits(activeFruits)
+	if typeof(activeFruits) ~= "table" then return 0, {} end
+	local total = 0
+	local perFruit = {}
+	for k, v in pairs(activeFruits) do
+		if typeof(v) == "number" then
+			perFruit[k] = v
+			total += v
+		elseif typeof(v) == "table" then
+			local count = 0
+			for _, bv in pairs(v) do
+				if typeof(bv) == "table" then
+					count += #bv
+				elseif typeof(bv) == "number" then
+					count += bv
+				end
+			end
+			if count == 0 and #v > 0 then count = #v end
+			perFruit[k] = count
+			total += count
+		end
+	end
+	return total, perFruit
+end
+
 Core.ConsumeFruits = function()
 	local save = getSaveCached()
 	if not save or typeof(save.Inventory) ~= "table" or not save.Inventory.Fruit then
@@ -1834,8 +1926,10 @@ Core.ConsumeFruits = function()
 	end
 	local fruitCmds = Modules.FruitCmds
 	if not fruitCmds or not fruitCmds.Consume then return end
+
 	local fruits = getBucketIds("Fruit")
 	local wanted = resolveSelection(settings.SelectedFruits, fruits)
+
 	local queueLimit = 50
 	if fruitCmds.ComputeFruitQueueLimit then
 		local ok, limit = pcall(fruitCmds.ComputeFruitQueueLimit)
@@ -1843,6 +1937,7 @@ Core.ConsumeFruits = function()
 			queueLimit = limit
 		end
 	end
+
 	local activeFruits = {}
 	if fruitCmds.GetActiveFruits then
 		local ok, active = pcall(fruitCmds.GetActiveFruits)
@@ -1850,6 +1945,19 @@ Core.ConsumeFruits = function()
 			activeFruits = active
 		end
 	end
+
+	local totalActive, perFruitActive = countActiveFruits(activeFruits)
+	local remainingGlobal = queueLimit - totalActive
+	if remainingGlobal <= 0 then
+		if not vrt.fruitMaxLogged then
+			vrt.fruitMaxLogged = true
+			print(("[VRT] Fruit queue full (%d/%d)"):format(totalActive, queueLimit))
+		end
+		return
+	end
+	vrt.fruitMaxLogged = false
+
+	local now = os.clock()
 	local sorted = {}
 	for uid, entry in pairs(save.Inventory.Fruit) do
 		if typeof(entry) == "table" and entry.id and (entry._am or 0) > 0 then
@@ -1859,17 +1967,58 @@ Core.ConsumeFruits = function()
 		end
 	end
 	table.sort(sorted, function(a, b) return a.amount > b.amount end)
+
+	local consumedAny = false
 	for _, item in ipairs(sorted) do
+		if remainingGlobal <= 0 then break end
 		local fruitId = item.entry.id
-		local stackKey = item.entry.sh == true and "Shiny" or "Normal"
-		local activeList = activeFruits[fruitId] and activeFruits[fruitId][stackKey]
-		local activeCount = (typeof(activeList) == "table") and #activeList or 0
-		local remaining = queueLimit - activeCount
+		local last = fruitCooldown[fruitId]
+		if last and now - last < 1 then continue end
+
+		local perFruitCount = perFruitActive[fruitId] or 0
+		local remainingFruit = queueLimit - perFruitCount
+		local remaining = math.min(remainingGlobal, remainingFruit)
 		if remaining <= 0 then continue end
+
 		local consumeAmount = math.min(item.amount, remaining)
 		if consumeAmount > 0 then
-			pcall(fruitCmds.Consume, item.uid, consumeAmount)
-			task.wait(0.3)
+			local ok = pcall(fruitCmds.Consume, item.uid, consumeAmount)
+			if ok then
+				fruitCooldown[fruitId] = now
+				perFruitActive[fruitId] = perFruitCount + consumeAmount
+				remainingGlobal -= consumeAmount
+				consumedAny = true
+			end
+		end
+	end
+
+	if consumedAny then
+		invalidateSaveCache()
+	end
+end
+
+Core.PrintFruitDebug = function()
+	local fruitCmds = Modules.FruitCmds
+	if not fruitCmds then
+		print("[VRT] FruitCmds: nil")
+		return
+	end
+	if fruitCmds.ComputeFruitQueueLimit then
+		local ok, limit = pcall(fruitCmds.ComputeFruitQueueLimit)
+		print(("[VRT] Queue limit: %s (%s)"):format(tostring(limit), tostring(ok)))
+	end
+	if fruitCmds.GetActiveFruits then
+		local ok, active = pcall(fruitCmds.GetActiveFruits)
+		print(("[VRT] GetActiveFruits: %s | type=%s"):format(tostring(ok), typeof(active)))
+		if ok and typeof(active) == "table" then
+			local total, perFruit = countActiveFruits(active)
+			print(("[VRT] Total active: %d"):format(total))
+			for k, v in pairs(perFruit) do
+				print(("[VRT]   %s = %d"):format(tostring(k), v))
+			end
+			for k, v in pairs(active) do
+				print(("[VRT]   raw[%s] = %s"):format(tostring(k), typeof(v)))
+			end
 		end
 	end
 end
@@ -2411,68 +2560,69 @@ local DiamondMountain = (function()
 			end,
 		},
 		{
-			id = "buyEgg", name = "Buy Mountain Egg", interval = 0.6,
-			run = function(self)
-				if not self.network.hatchEgg then return "no hatch remote" end
-				local root = self:getRoot()
-				if not root then return "no character" end
-				local best, bestDistance
-				for _, egg in ipairs(self:getMountainEggs()) do
-					local d = distanceSq(egg.part.Position, root.Position)
-					if not bestDistance or d < bestDistance then best, bestDistance = egg, d end
-				end
-				if not best then return "no mountain egg" end
-				local hatchEgg = self.network.hatchEgg
-				pcall(hatchEgg.InvokeServer, hatchEgg, best.uuid)
-				return string.format("hatching (%.0f)", math.sqrt(bestDistance))
-			end,
-		},
-		{
-			id = "buySelectedEgg", name = "Buy Selected Custom Egg", interval = 0.6,
-			run = function(self)
-				if not self.network.hatchEgg then return "no hatch remote" end
-				local uuid = self.selectedEggUuid
-				if not uuid or uuid == "" then return "no egg selected" end
-				local things = workspaceService:FindFirstChild("__THINGS")
-				local folder = things and things:FindFirstChild("CustomEggs")
-				if not folder then return "no custom eggs" end
-				local eggModel = folder:FindFirstChild(uuid)
-				if not eggModel then return "egg not found: " .. uuid end
-				local hatchEgg = self.network.hatchEgg
-				pcall(hatchEgg.InvokeServer, hatchEgg, uuid)
-				return "buying " .. uuid
-			end,
-		},
-		{
 			id = "merchant", name = "Buy From Traveling Merchant", interval = 3,
 			run = function(self)
 				local purchase = self.network.merchantPurchase
-				if not purchase then return "no merchant remote" end
+				if not purchase then return "no purchase remote" end
 				local root = self:getRoot()
 				if not root then return "no character" end
-				local camps = self:getCamps()
-				if not camps then return "no camps" end
-				local highest = self:getHighestOpenCamp()
-				local camp = camps:FindFirstChild(tostring(highest))
-				local merchantPart = camp and camp:FindFirstChild("Merchant")
-				if not merchantPart or not merchantPart:IsA("BasePart") then
-					return "no merchant @camp " .. highest
+
+				local merchant, campName = self:findMerchant()
+				if not merchant then return "no merchant" end
+
+				local merchantPart
+				if merchant:IsA("BasePart") then
+					merchantPart = merchant
+				else
+					merchantPart = merchant:FindFirstChildWhichIsA("BasePart", true)
 				end
+				if not merchantPart then return "merchant has no part" end
+
 				local originalCFrame = root.CFrame
 				root.CFrame = CFrame.new(merchantPart.Position + Vector3.new(0, 5, 0))
-				task.wait(0.4)
+				task.wait(0.5)
+
+				-- Try fire proximity prompt to open shop
+				local opened = false
+				for _, d in ipairs(merchant:GetDescendants()) do
+					if d:IsA("ProximityPrompt") then
+						if not d.Enabled then pcall(function() d.Enabled = true end) end
+						pcall(fireproximityprompt, d)
+						opened = true
+						task.wait(0.15)
+					end
+				end
+
+				-- Try open via MachineScreens_Get
 				local screens = self.network.machineScreens
 				if screens then
-					pcall(screens.FireServer, screens, "Merchant")
-					task.wait(0.3)
+					for _, id in ipairs({ merchant.Name, MERCHANT_ID, "Merchant" }) do
+						pcall(screens.FireServer, screens, id)
+						task.wait(0.15)
+					end
 				end
+
+				-- Try purchase with multiple ids
 				local bought = 0
-				for index = 1, 10 do
-					local ok = pcall(purchase.InvokeServer, purchase, MERCHANT_ID, index)
-					if ok then bought += 1; task.wait(0.1) end
+				local idsToTry = { merchant.Name, MERCHANT_ID, "Merchant", "DiamondMountainMerchant" }
+				for _, merchantId in ipairs(idsToTry) do
+					for index = 1, 15 do
+						local ok, result = pcall(purchase.InvokeServer, purchase, merchantId, index)
+						if ok and result ~= false then
+							bought += 1
+							task.wait(0.08)
+						else
+							break
+						end
+					end
+					if bought > 0 then break end
 				end
+
 				pcall(function() root.CFrame = originalCFrame end)
-				return bought > 0 and ("bought " .. bought .. " @camp " .. highest) or "purchase failed"
+				if bought > 0 then
+					return string.format("bought %d @%s", bought, tostring(campName))
+				end
+				return opened and "shop opened, purchase failed" or "purchase failed"
 			end,
 		},
 		{
@@ -2841,6 +2991,38 @@ local DiamondMountain = (function()
 		self.campList = list
 		self.campListAt = now
 		return list
+	end
+
+	-- NEW: tìm merchant ở bất kỳ camp nào (không chỉ highest)
+	function DiamondMountain:findMerchant()
+		local camps = self:getCamps()
+		if camps then
+			for _, camp in ipairs(camps:GetChildren()) do
+				local merchant = camp:FindFirstChild("Merchant")
+				if merchant then
+					return merchant, camp.Name
+				end
+			end
+		end
+		local mountain = self:getMountain()
+		if mountain then
+			for _, d in ipairs(mountain:GetDescendants()) do
+				if d.Name:lower():find("merchant", 1, true) and (d:IsA("Model") or d:IsA("BasePart")) then
+					return d, "mountain"
+				end
+			end
+		end
+		local things = workspaceService:FindFirstChild("__THINGS")
+		local instances = things and things:FindFirstChild("Instances")
+		local dm = instances and instances:FindFirstChild("DiamondMountain")
+		if dm then
+			for _, d in ipairs(dm:GetDescendants()) do
+				if d.Name:lower():find("merchant", 1, true) and (d:IsA("Model") or d:IsA("BasePart")) then
+					return d, "instances"
+				end
+			end
+		end
+		return nil
 	end
 
 	function DiamondMountain:watchBreakables()
@@ -3380,6 +3562,7 @@ end)()
 
 getgenv().VRT_DiamondMountain = DiamondMountain
 
+-- UPDATED: bỏ buyEgg và buySelectedEgg (đã có trong tab Eggs)
 local DM_FEATURES = {
 	{ id = "autoFarm", name = "Auto Farm" },
 	{ id = "autoFarmBest", name = "Auto Farm Best (highest camp)" },
@@ -3387,8 +3570,6 @@ local DM_FEATURES = {
 	{ id = "fightYeti", name = "Fight The Yeti" },
 	{ id = "feedYeti", name = "Feed The Yeti" },
 	{ id = "fillWalls", name = "Fill Rubble Walls" },
-	{ id = "buyEgg", name = "Buy Mountain Egg" },
-	{ id = "buySelectedEgg", name = "Buy Selected Custom Egg" },
 	{ id = "merchant", name = "Buy From Traveling Merchant" },
 	{ id = "sendExpedition", name = "Send Pets On Expeditions" },
 	{ id = "claimExpedition", name = "Claim Expeditions" },
@@ -3414,16 +3595,42 @@ local function ensureDmInstance()
 	return instance
 end
 
+-- UPDATED: check nhiều nguồn để tránh re-join khi đã trong DM
+local function isInDiamondMountain()
+	local info = getInstanceInfo()
+	if info and info.InstanceId == "DiamondMountain" then
+		return true
+	end
+	local instance = vrt.dmInstance
+	if instance then
+		local mountain = instance:getMountain()
+		if mountain then return true end
+	end
+	local root = getRoot()
+	if root then
+		local pos = root.Position
+		if pos.X >= -31500 and pos.X <= -28500 and pos.Z >= 29900 and pos.Z <= 31700 then
+			return true
+		end
+	end
+	return false
+end
+
 local function autoJoinTick()
 	local instance = ensureDmInstance()
 	if not instance then return end
 	local root = getRoot()
 	if not root then return end
-	local info = getInstanceInfo()
-	local inDM = info and info.InstanceId == "DiamondMountain"
-	if not inDM then
-		instance:joinEvent()
+
+	if isInDiamondMountain() then
+		return
 	end
+
+	local now = os.clock()
+	if vrt.lastJoinAttempt and now - vrt.lastJoinAttempt < 5 then return end
+	vrt.lastJoinAttempt = now
+
+	instance:joinEvent()
 end
 
 -- -----------------------------------------------------
@@ -3724,6 +3931,10 @@ if tabs.keys then
 			if value then startLoop("ConsumeFruits", 3, Core.ConsumeFruits) else stopLoop("ConsumeFruits") end
 		end,
 	})
+	tabs.keys:CreateButton({
+		Name = "Print Fruit Debug",
+		Callback = function() Core.PrintFruitDebug() end,
+	})
 
 	tabs.keys:CreateSection("Secret Keys Section")
 	tabs.keys:CreateToggle({
@@ -3762,7 +3973,7 @@ if tabs.eggs then
 		end,
 	})
 	tabs.eggs:CreateToggle({
-		Name = "Hook Egg Animation (game-native notif, no anim)",
+		Name = "Hook Egg Animation (TextLabel custom, no anim)",
 		CurrentValue = settings.HookEggAnimation or false, Flag = "HookEggAnimation",
 		Callback = function(value)
 			settings.HookEggAnimation = value
@@ -3812,7 +4023,7 @@ if tabs.eggs then
 		end,
 	})
 	tabs.eggs:CreateToggle({
-		Name = "Auto Buy Selected Custom Egg", CurrentValue = settings.BuySelectedCustomEgg, Flag = "BuySelectedCustomEgg",
+		Name = "Auto Buy Selected Custom Egg (Max)", CurrentValue = settings.BuySelectedCustomEgg, Flag = "BuySelectedCustomEgg",
 		Callback = function(value)
 			settings.BuySelectedCustomEgg = value
 			queueSave()
@@ -3935,9 +4146,15 @@ if tabs.auto then
 			vrt.flagWarned = {}
 			vrt.flagDebug = {}
 			vrt.flagInfoWarned = false
+			vrt.flagSuccessLogged = false
 		end,
 	})
-	tabs.auto:CreateLabel("Flag Amount = MAX (tự tính theo inventory + game cap)")
+	tabs.auto:CreateSlider({
+		Name = "Flag Amount (số lượng dùng mỗi lần)",
+		Range = { 1, 100 }, Increment = 1, Suffix = "flags",
+		CurrentValue = settings.FlagAmount or 45, Flag = "FlagAmount",
+		Callback = function(value) settings.FlagAmount = value; queueSave() end,
+	})
 	tabs.auto:CreateToggle({
 		Name = "Use Selected Flag", CurrentValue = settings.UseSelectedFlag, Flag = "UseSelectedFlag",
 		Callback = function(value)
@@ -3946,6 +4163,7 @@ if tabs.auto then
 			vrt.flagWarned = {}
 			vrt.flagDebug = {}
 			vrt.flagInfoWarned = false
+			vrt.flagSuccessLogged = false
 			if value then startLoop("UseSelectedFlag", 2, Core.ActivateFlag) else stopLoop("UseSelectedFlag") end
 		end,
 	})
@@ -3954,17 +4172,33 @@ if tabs.auto then
 		Callback = function()
 			print(("[VRT] Flags: %d"):format(#FLAGS))
 			for _, flagId in ipairs(FLAGS) do
-				local entry = findInventoryEntry(flagId)
-				local owned = entry and (entry._am or 0) or 0
+				local owned, resolved = Core.GetFlagOwnedAmount(flagId)
 				local max = Core.GetFlagMaxAmount(flagId)
-				print(("[VRT]   %s | owned=%d | max=%d"):format(flagId, owned, max))
+				print(("[VRT]   %s | resolved=%s | owned=%d | max=%d"):format(
+					flagId, tostring(resolved), owned, max
+				))
 			end
 			local info = getInstanceInfo()
 			if info then
 				print(("[VRT] Instance: %s | Area: %s | Zone: %s"):format(
-					tostring(info.InstanceId), tostring(info.AreaId), tostring(info.ZoneNumber)
+					tostring(info.InstanceId or info.instanceId),
+					tostring(info.AreaId or info.areaId),
+					tostring(info.ZoneNumber)
 				))
+			else
+				print("[VRT] Instance info: nil")
 			end
+			print(("[VRT] Slider amount: %d | Game max: %d"):format(
+				settings.FlagAmount or 45, Core.GetFlagGameMax()
+			))
+		end,
+	})
+	tabs.auto:CreateButton({
+		Name = "Use Flag Now (once)",
+		Callback = function()
+			vrt.lastFlagAttempt = nil
+			vrt.flagSuccessLogged = false
+			Core.ActivateFlag()
 		end,
 	})
 end
@@ -4080,6 +4314,7 @@ if tabs.rank then
 end
 
 -- ================= EVENT =================
+-- UPDATED: bỏ Auto Join Now, bỏ egg features, fix re-join
 if tabs.event then
 	tabs.event:CreateSection("Diamond Mountain")
 
@@ -4098,30 +4333,14 @@ if tabs.event then
 		end,
 	})
 
-	tabs.event:CreateToggle({
-		Name = "Auto Join Now (force join, 1s)",
-		CurrentValue = settings.DMAutoJoinForce or false,
-		Flag = "DMAutoJoinForce",
-		Callback = function(value)
-			settings.DMAutoJoinForce = value
-			queueSave()
-			if value then
-				startLoop("DMAutoJoinForce", 1, autoJoinTick)
-			else
-				stopLoop("DMAutoJoinForce")
-			end
-		end,
-	})
-
 	tabs.event:CreateButton({
 		Name = "Print Auto Join Debug",
 		Callback = function()
-			local info = getInstanceInfo()
 			print("[VRT] Auto Join Debug:")
 			print("  DMAutoJoin setting:", tostring(settings.DMAutoJoin))
-			print("  DMAutoJoinForce setting:", tostring(settings.DMAutoJoinForce))
-			print("  Loop 5s running:", tostring(vrt.loops["DMAutoJoin"] ~= nil))
-			print("  Loop 1s running:", tostring(vrt.loops["DMAutoJoinForce"] ~= nil))
+			print("  Loop running:", tostring(vrt.loops["DMAutoJoin"] ~= nil))
+			print("  isInDiamondMountain():", tostring(isInDiamondMountain()))
+			local info = getInstanceInfo()
 			print("  InstanceId:", tostring(info and info.InstanceId))
 			print("  AreaId:", tostring(info and info.AreaId))
 			local root = getRoot()
@@ -4573,7 +4792,6 @@ task.spawn(function()
 	if settings.UseSelectedFlag then startLoop("UseSelectedFlag", 2, Core.ActivateFlag) end
 	if settings.AdminAbuse then startLoop("AdminAbuse", 5, Core.ClaimFakeCharacters) end
 	if settings.DMAutoJoin then startLoop("DMAutoJoin", 5, autoJoinTick) end
-	if settings.DMAutoJoinForce then startLoop("DMAutoJoinForce", 1, autoJoinTick) end
 
 	print("[VRT] Config restored.")
 end)
