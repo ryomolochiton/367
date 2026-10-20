@@ -1,855 +1,663 @@
--- VRT HUB — Events module (Diamond Mountain + Time Trial)
--- v1.7.7
-
-local Events = {}
-Events.VERSION = "1.7.7"
-Events.__index = Events
-
--- Constants.
-local DM_INSTANCE_ID = "DiamondMountain"
-local DM_MERCHANT_ID = "DiamondMountainMerchant"
-local DM_EXPEDITION_ID = "DiamondMountainExpeditionMachine"
-local DM_FARM_RADIUS = 250
-local DM_CAMP_RADIUS = 150
-
-local TT_INSTANCE_ID = "TimeTrial"
-local TT_TELEPORT_PART = "Enter"
-local TT_STOP_RADIUS = 15
-local TT_FARM_INTERVAL = 0.1
-local TT_JUMP_COOLDOWN = 0.2
-local TT_ENTER_COOLDOWN = 3
-local TT_DEFAULT_MOVE_RADIUS = 45
-local SAVE_TTL = 2
+-- =====================================================
+-- VRT DIAGNOSTIC v1.0
+-- Dump toàn bộ debug info -> VRT/VRT_Diag.txt
+-- Chạy độc lập, không cần VRT Hub đang chạy
+-- =====================================================
 
 local playersService = game:GetService("Players")
 local replicatedStorage = game:GetService("ReplicatedStorage")
-local virtualInputManager = game:GetService("VirtualInputManager")
+
 local localPlayer = playersService.LocalPlayer
 
--- ══════════════════════════════════════════════════════════
---  SHARED HELPERS
--- ══════════════════════════════════════════════════════════
+local DIAG_FOLDER = "VRT"
+local DIAG_PATH = "VRT/VRT_Diag.txt"
 
----Require a Library.Client module.
----@param name string
-local function getClientModule(name)
-	local library = replicatedStorage:FindFirstChild("Library")
-	local client = library and library:FindFirstChild("Client")
-	local target = client and client:FindFirstChild(name)
-	if not target then
-		return nil
+pcall(function()
+	if not isfolder(DIAG_FOLDER) then
+		makefolder(DIAG_FOLDER)
 	end
-	local ok, module = pcall(require, target)
-	return ok and module or nil
-end
+end)
 
----Require a Library.Types module.
----@param name string
-local function getTypeModule(name)
-	local library = replicatedStorage:FindFirstChild("Library")
-	local types = library and library:FindFirstChild("Types")
-	local target = types and types:FindFirstChild(name)
-	if not target then
-		return nil
+local lines = {}
+
+local function w(...)
+	local parts = {}
+	for i = 1, select("#", ...) do
+		parts[#parts + 1] = tostring(select(i, ...))
 	end
-	local ok, module = pcall(require, target)
-	return ok and module or nil
+	local line = table.concat(parts, " ")
+	lines[#lines + 1] = line
+	print(line)
 end
 
----Return the character root part.
-local function getRoot()
-	local character = localPlayer.Character
-	if not character then
-		return nil
+local function sep(title)
+	w("")
+	w(string.rep("=", 78))
+	w("=== " .. title)
+	w(string.rep("=", 78))
+end
+
+local function flush()
+	local content = table.concat(lines, "\n")
+	local ok, err = pcall(writefile, DIAG_PATH, content)
+	if ok then
+		print(("[VRT-DIAG] Saved -> %s (%d bytes)"):format(DIAG_PATH, #content))
+	else
+		warn("[VRT-DIAG] writefile failed: " .. tostring(err))
+		pcall(setclipboard, content)
+		print("[VRT-DIAG] Copied to clipboard instead.")
 	end
-	return character:FindFirstChild("HumanoidRootPart")
 end
 
----Return the __THINGS instance folder.
-local function getThings()
-	return workspace:FindFirstChild("__THINGS")
-end
-
----Return an instance folder by id.
----@param instanceId string
-local function findInstanceFolder(instanceId)
-	local things = getThings()
-	if not things then
-		return nil
-	end
-	local container = things:FindFirstChild("__INSTANCE_CONTAINER")
-	local active = container and container:FindFirstChild("Active")
-	local folder = active and active:FindFirstChild(instanceId)
-	if folder then
-		return folder
-	end
-	local instances = things:FindFirstChild("Instances")
-	return instances and instances:FindFirstChild(instanceId) or nil
-end
-
--- ══════════════════════════════════════════════════════════
---  DIAMOND MOUNTAIN
--- ══════════════════════════════════════════════════════════
-
-local DiamondMountain = {}
-DiamondMountain.__index = DiamondMountain
-
----Create a new DiamondMountain controller.
----@param context table
-function DiamondMountain.new(context)
-	local self = setmetatable({}, DiamondMountain)
-	self.context = context
-	self.features = {}
-	return self
-end
-
----Return the active mountain folder.
-function DiamondMountain:getInstanceFolder()
-	return findInstanceFolder(DM_INSTANCE_ID)
-end
-
----Fire a remote safely.
-function DiamondMountain:fire(name, ...)
-	local network = getClientModule("Network")
-	if not network then
-		return false
-	end
-	return pcall(network.Fire, network, name, ...)
-end
-
----Invoke a remote safely.
-function DiamondMountain:invoke(name, ...)
-	local network = getClientModule("Network")
-	if not network then
-		return false
-	end
-	return pcall(network.Invoke, network, name, ...)
-end
-
----Return every breakable inside the mountain folder.
-function DiamondMountain:getBreakables()
-	local folder = self:getInstanceFolder()
-	local breakables = folder and folder:FindFirstChild("Breakables")
-	if not breakables then
-		return {}
-	end
-	return breakables:GetChildren()
-end
-
----Damage breakables matching a name filter.
----@param filter string?
-function DiamondMountain:damageBreakables(filter)
-	local network = getClientModule("Network")
-	local root = getRoot()
-	if not network or not root then
-		return
-	end
-	local origin = root.Position
-	for _, breakable in ipairs(self:getBreakables()) do
-		if breakable:IsA("Model") then
-			local matches = filter == nil or breakable.Name:find(filter, 1, true) ~= nil
-			if matches then
-				local ok, pivot = pcall(function()
-					return breakable:GetPivot().Position
-				end)
-				if ok and pivot and (origin - pivot).Magnitude <= DM_FARM_RADIUS then
-					pcall(network.UnreliableFire, network, "Breakables_PlayerDealDamage", breakable.Name)
-				end
+-- -----------------------------------------------------
+-- Serializer
+-- -----------------------------------------------------
+local function serialize(value, depth, seen)
+	depth = depth or 0
+	seen = seen or {}
+	if depth > 5 then return "..." end
+	local t = typeof(value)
+	if t == "string" then
+		if #value > 200 then
+			return string.format("%q..(%d)", value:sub(1, 200), #value)
+		end
+		return string.format("%q", value)
+	elseif t == "number" or t == "boolean" or t == "nil" then
+		return tostring(value)
+	elseif t == "Instance" then
+		return value:GetFullName()
+	elseif t == "Vector3" then
+		return string.format("Vector3(%.1f, %.1f, %.1f)", value.X, value.Y, value.Z)
+	elseif t == "Vector2" then
+		return string.format("Vector2(%.1f, %.1f)", value.X, value.Y)
+	elseif t == "CFrame" then
+		local p = value.Position
+		return string.format("CFrame(%.1f, %.1f, %.1f)", p.X, p.Y, p.Z)
+	elseif t == "Color3" then
+		return string.format("Color3(%d, %d, %d)", value.R * 255, value.G * 255, value.B * 255)
+	elseif t == "EnumItem" then
+		return tostring(value)
+	elseif t == "function" then
+		local info = debug.getinfo(value)
+		return string.format("<fn %s>", info and info.what or "?")
+	elseif t == "table" then
+		if seen[value] then return "<cycle>" end
+		seen[value] = true
+		local parts = {}
+		local count = 0
+		for k, v in pairs(value) do
+			count += 1
+			if count > 40 then
+				parts[#parts + 1] = "..."
+				break
 			end
+			parts[#parts + 1] = string.format("[%s]=%s",
+				serialize(k, depth + 1, seen),
+				serialize(v, depth + 1, seen))
 		end
+		seen[value] = nil
+		return "{" .. table.concat(parts, ", ") .. "}"
 	end
+	return tostring(value)
 end
 
----Damage every breakable in range.
-function DiamondMountain:autoFarm()
-	self:damageBreakables(nil)
-end
-
----Damage trail breakables.
-function DiamondMountain:breakTrail()
-	self:damageBreakables("Trail")
-end
-
----Damage wall breakables.
-function DiamondMountain:fillWalls()
-	self:damageBreakables("Wall")
-end
-
----Damage the Yeti.
-function DiamondMountain:fightYeti()
-	local folder = self:getInstanceFolder()
-	local yeti = folder and folder:FindFirstChild("Yeti", true)
-	if yeti then
-		self:fire("Breakables_PlayerDealDamage", yeti.Name)
-	end
-end
-
----Feed the Yeti.
-function DiamondMountain:feedYeti()
-	self:invoke("DiamondMountain: FeedYeti")
-end
-
----Buy the mountain egg.
-function DiamondMountain:buyEgg()
-	local eggCmds = getClientModule("EggCmds")
-	local maxHatch = 1
-	if eggCmds then
-		local ok, value = pcall(function()
-			return eggCmds:GetMaxHatch()
-		end)
-		if ok and tonumber(value) then
-			maxHatch = tonumber(value)
-		end
-	end
-	self:invoke("Eggs_RequestPurchase", DM_INSTANCE_ID, maxHatch)
-end
-
----Purchase merchant slots.
-function DiamondMountain:merchant()
-	for slot = 1, 6 do
-		self:invoke("Merchant_RequestPurchase", DM_MERCHANT_ID, slot)
-		task.wait(0.1)
-	end
-end
-
----Send the expedition.
-function DiamondMountain:sendExpedition()
-	self:invoke("Expedition_Send", DM_EXPEDITION_ID)
-end
-
----Claim the expedition.
-function DiamondMountain:claimExpedition()
-	self:invoke("Expedition_Claim", DM_EXPEDITION_ID)
-end
-
----Teleport to the next camp.
-function DiamondMountain:teleportCamp()
-	local root = getRoot()
-	local folder = self:getInstanceFolder()
-	if not root or not folder then
+-- -----------------------------------------------------
+-- Module dump
+-- -----------------------------------------------------
+local function dumpModule(name, mod, maxDepth)
+	maxDepth = maxDepth or 1
+	if typeof(mod) ~= "table" then
+		w(("[%s] type = %s | value = %s"):format(name, typeof(mod), serialize(mod)))
 		return
 	end
-	local camps = folder:FindFirstChild("Camps")
-	if not camps then
-		return
+	w(("[%s] type = table"):format(name))
+	local keys = {}
+	for k in pairs(mod) do
+		keys[#keys + 1] = k
 	end
-	local best, bestDist
-	for _, camp in ipairs(camps:GetChildren()) do
-		local ok, pivot = pcall(function()
-			return camp:GetPivot().Position
-		end)
-		if ok and pivot then
-			local dist = (root.Position - pivot).Magnitude
-			if dist > DM_CAMP_RADIUS and (not bestDist or dist < bestDist) then
-				bestDist = dist
-				best = camp
+	table.sort(keys, function(a, b) return tostring(a) < tostring(b) end)
+	for _, k in ipairs(keys) do
+		local v = mod[k]
+		local tv = typeof(v)
+		w(("  .%-32s = %s"):format(tostring(k), tv))
+		if tv == "function" then
+			local info = debug.getinfo(v)
+			if info then
+				w(("      what=%s nups=%d params=%d vararg=%s"):format(
+					tostring(info.what), info.nups or 0,
+					info.numparams or 0, tostring(info.is_vararg)
+				))
 			end
-		end
-	end
-	if best then
-		pcall(function()
-			root.CFrame = best:GetPivot()
-		end)
-	end
-end
-
----Collect artifacts in range.
-function DiamondMountain:artifacts()
-	local folder = self:getInstanceFolder()
-	local root = getRoot()
-	if not folder or not root then
-		return
-	end
-	local artifacts = folder:FindFirstChild("Artifacts")
-	if not artifacts then
-		return
-	end
-	for _, artifact in ipairs(artifacts:GetChildren()) do
-		local ok, pivot = pcall(function()
-			return artifact:GetPivot().Position
-		end)
-		if ok and pivot and (root.Position - pivot).Magnitude <= DM_FARM_RADIUS then
-			self:invoke("Artifact_Collect", artifact.Name)
-		end
-	end
-end
-
----Buy the next mountain upgrade.
-function DiamondMountain:buyUpgrades()
-	self:invoke("DiamondMountain: RequestUpgrade")
-end
-
----Use every available boost.
-function DiamondMountain:useBoosts()
-	self:invoke("DiamondMountain: UseBoost")
-end
-
----Strip heavy visuals from mountain models.
-function DiamondMountain:optimize()
-	local folder = self:getInstanceFolder()
-	if not folder then
-		return
-	end
-	for _, descendant in ipairs(folder:GetDescendants()) do
-		if descendant:IsA("ParticleEmitter")
-			or descendant:IsA("Trail")
-			or descendant:IsA("Beam")
-			or descendant:IsA("Decal") then
-			pcall(function()
-				descendant:Destroy()
-			end)
-		end
-	end
-end
-
----Start a repeating feature loop.
----@param key string
----@param callback function
----@param interval number
-function DiamondMountain:startFeature(key, callback, interval)
-	if self.features[key] then
-		return
-	end
-	self.features[key] = true
-	task.spawn(function()
-		while self.features[key] and self.context.isAlive() do
-			pcall(callback, self)
-			task.wait(interval or 1)
-		end
-		self.features[key] = false
-	end)
-end
-
----Stop a repeating feature loop.
----@param key string
-function DiamondMountain:stopFeature(key)
-	self.features[key] = false
-end
-
----Build the Diamond Mountain tab.
----@param tab any
-function DiamondMountain:build(tab)
-	local function addToggle(name, key, callback, interval)
-		tab:CreateToggle({
-			Name = name,
-			CurrentValue = false,
-			Flag = "DM_" .. key,
-			Callback = function(state)
-				if state then
-					self:startFeature(key, callback, interval)
-				else
-					self:stopFeature(key)
-				end
-			end,
-		})
-	end
-
-	tab:CreateSection("Mountain Farm")
-	addToggle("Auto Farm Mountain", "autoFarm", self.autoFarm, 0.2)
-	addToggle("Break Trail", "breakTrail", self.breakTrail, 0.3)
-	addToggle("Fill Walls", "fillWalls", self.fillWalls, 0.5)
-	addToggle("Fight Yeti", "fightYeti", self.fightYeti, 0.3)
-	addToggle("Feed Yeti", "feedYeti", self.feedYeti, 2)
-
-	tab:CreateSection("Mountain Economy")
-	addToggle("Buy Egg", "buyEgg", self.buyEgg, 1)
-	addToggle("Merchant", "merchant", self.merchant, 5)
-	addToggle("Send Expedition", "sendExpedition", self.sendExpedition, 10)
-	addToggle("Claim Expedition", "claimExpedition", self.claimExpedition, 5)
-	addToggle("Buy Upgrades", "buyUpgrades", self.buyUpgrades, 3)
-	addToggle("Use Boosts", "useBoosts", self.useBoosts, 5)
-
-	tab:CreateSection("Mountain Utility")
-	addToggle("Collect Artifacts", "artifacts", self.artifacts, 1)
-	addToggle("Optimize Visuals", "optimize", self.optimize, 10)
-
-	tab:CreateButton({
-		Name = "Teleport To Camp",
-		Callback = function()
-			pcall(self.teleportCamp, self)
-		end,
-	})
-
-	tab:CreateLabel("DiamondMountain v" .. Events.VERSION, "mountain", Color3.fromRGB(120, 200, 255), false)
-end
-
--- ══════════════════════════════════════════════════════════
---  TIME TRIAL
--- ══════════════════════════════════════════════════════════
-
-local TimeTrial = {}
-TimeTrial.__index = TimeTrial
-
----Create a new TimeTrial controller.
----@param context table
-function TimeTrial.new(context)
-	local self = setmetatable({}, TimeTrial)
-	self.context = context
-	self.enabled = false
-	self.moveHooked = false
-	self.originalMoveDirection = nil
-	self.hoverboardInstance = nil
-	self.summaryConnection = nil
-	self.autoLeave = true
-	self.moveRadius = TT_DEFAULT_MOVE_RADIUS
-	self.saveCache = nil
-	self.saveCacheAt = 0
-	self.lastJumpAt = 0
-	self.lastEnterAt = 0
-	self.warnedNoRuns = false
-	return self
-end
-
----Return the cached save table.
-function TimeTrial:getSave()
-	local now = os.clock()
-	if self.saveCache and now - self.saveCacheAt < SAVE_TTL then
-		return self.saveCache
-	end
-	local saveModule = getClientModule("Save")
-	if not saveModule then
-		return nil
-	end
-	local ok, data = pcall(function()
-		return saveModule:Get()
-	end)
-	self.saveCache = ok and data or nil
-	self.saveCacheAt = now
-	return self.saveCache
-end
-
----Return the TimeTrial instance folder.
-function TimeTrial:getInstanceFolder()
-	return findInstanceFolder(TT_INSTANCE_ID)
-end
-
----Return the daily runs left.
-function TimeTrial:getDailyRunsLeft()
-	local save = self:getSave()
-	if not save or type(save.TimeTrialStats) ~= "table" then
-		return 0
-	end
-	local used = tonumber(save.TimeTrialStats.DailyRuns) or 0
-	local types = getTypeModule("TimeTrials")
-	local max = types and tonumber(types.DailyRuns) or 0
-	if max <= 0 then
-		return 0
-	end
-	return math.max(0, max - used)
-end
-
----Return true while inside a time trial.
-function TimeTrial:isInTimeTrial()
-	local save = self:getSave()
-	if not save then
-		return false
-	end
-	return save.instanceID == TT_INSTANCE_ID
-end
-
----Return true when the character is spawned and alive.
-function TimeTrial:isSpawned()
-	local character = localPlayer.Character
-	if not character then
-		return false
-	end
-	local humanoid = character:FindFirstChild("Humanoid")
-	if humanoid and humanoid.Health <= 0 then
-		return false
-	end
-	return character:FindFirstChild("HumanoidRootPart") ~= nil
-end
-
----Return the spawn part of the busiest breakable area.
-function TimeTrial:getBestZone()
-	local things = getThings()
-	local breakables = things and things:FindFirstChild("Breakables")
-	if not breakables then
-		return nil
-	end
-
-	local counts = {}
-	for _, breakable in ipairs(breakables:GetChildren()) do
-		local areaId = breakable:GetAttribute("AreaID")
-		if areaId then
-			counts[areaId] = (counts[areaId] or 0) + 1
-		end
-	end
-
-	local bestId, bestCount
-	for id, count in pairs(counts) do
-		if not bestCount or count > bestCount then
-			bestCount = count
-			bestId = id
-		end
-	end
-	if not bestId then
-		return nil
-	end
-
-	local instance = self:getInstanceFolder()
-	local spawns = instance and instance:FindFirstChild("BREAKABLE_SPAWNS")
-	local spawnPart = spawns and spawns:FindFirstChild(bestId)
-	if spawnPart then
-		return spawnPart
-	end
-
-	for _, breakable in ipairs(breakables:GetChildren()) do
-		if breakable:GetAttribute("AreaID") == bestId then
-			return breakable
-		end
-	end
-	return nil
-end
-
----Teleport into the time trial.
-function TimeTrial:enter()
-	if self:isInTimeTrial() then
-		return false
-	end
-	local now = os.clock()
-	if now - self.lastEnterAt < TT_ENTER_COOLDOWN then
-		return false
-	end
-	local root = getRoot()
-	if not root then
-		return false
-	end
-	local instance = self:getInstanceFolder()
-	local teleports = instance and instance:FindFirstChild("Teleports")
-	local enterPart = teleports and teleports:FindFirstChild(TT_TELEPORT_PART)
-	if not enterPart then
-		return false
-	end
-	self.lastEnterAt = now
-	pcall(function()
-		root.CFrame = enterPart.CFrame
-	end)
-	return true
-end
-
----Press space to keep the hoverboard moving.
-function TimeTrial:jump()
-	local now = os.clock()
-	if now - self.lastJumpAt < TT_JUMP_COOLDOWN then
-		return
-	end
-	self.lastJumpAt = now
-	pcall(function()
-		virtualInputManager:SendKeyEvent(true, Enum.KeyCode.Space, false, game)
-	end)
-	task.wait(0.05)
-	pcall(function()
-		virtualInputManager:SendKeyEvent(false, Enum.KeyCode.Space, false, game)
-	end)
-end
-
----Return the HoverboardInstance module.
-function TimeTrial:getHoverboardInstance()
-	if self.hoverboardInstance then
-		return self.hoverboardInstance
-	end
-	local playerScripts = localPlayer:FindFirstChild("PlayerScripts")
-	local scripts = playerScripts and playerScripts:FindFirstChild("Scripts")
-	local gameFolder = scripts and scripts:FindFirstChild("Game")
-	local manager = gameFolder and gameFolder:FindFirstChild("Hoverboard Manager")
-	local module = manager and manager:FindFirstChild("HoverboardInstance")
-	if not module then
-		return nil
-	end
-	local ok, result = pcall(require, module)
-	if not ok or type(result) ~= "table" then
-		return nil
-	end
-	self.hoverboardInstance = result
-	return result
-end
-
----Compute the steering vector toward the busiest zone.
-function TimeTrial:computeDirection()
-	local root = getRoot()
-	if not root then
-		return Vector3.zero, Vector3.zero
-	end
-	local zone = self:getBestZone()
-	if not zone then
-		return Vector3.zero, Vector3.zero
-	end
-	local ok, target = pcall(function()
-		return zone.Position
-	end)
-	if not ok or not target then
-		return Vector3.zero, Vector3.zero
-	end
-	local delta = target - root.Position
-	if delta.Magnitude <= TT_STOP_RADIUS then
-		return Vector3.zero, Vector3.zero
-	end
-	return delta.Unit, Vector3.zero
-end
-
----Install the hoverboard steering hook.
-function TimeTrial:hookMove()
-	if self.moveHooked then
-		return true
-	end
-	local hoverboard = self:getHoverboardInstance()
-	if not hoverboard then
-		return false
-	end
-	local original = hoverboard.ComputeMoveDirection
-	if type(original) ~= "function" then
-		return false
-	end
-
-	pcall(setreadonly, hoverboard, false)
-
-	local controller = self
-	local replacement = function(boardSelf, ...)
-		if not controller.enabled then
-			return original(boardSelf, ...)
-		end
-		local ok, direction, extra = pcall(controller.computeDirection, controller)
-		if not ok then
-			return original(boardSelf, ...)
-		end
-		return direction, extra
-	end
-
-	local okSet = pcall(function()
-		hoverboard.ComputeMoveDirection = replacement
-	end)
-	if not okSet then
-		return false
-	end
-
-	self.originalMoveDirection = original
-	self.moveHooked = true
-	self.context.log("[TT] move hook installed")
-	return true
-end
-
----Remove the hoverboard steering hook.
-function TimeTrial:unhookMove()
-	if not self.moveHooked then
-		return
-	end
-	local hoverboard = self.hoverboardInstance
-	if hoverboard and self.originalMoveDirection then
-		pcall(function()
-			hoverboard.ComputeMoveDirection = self.originalMoveDirection
-		end)
-	end
-	self.originalMoveDirection = nil
-	self.moveHooked = false
-end
-
----Leave the trial when the summary appears.
-function TimeTrial:watchSummary()
-	if self.summaryConnection then
-		return
-	end
-	task.spawn(function()
-		local playerGui = localPlayer:FindFirstChild("PlayerGui")
-		if not playerGui then
-			return
-		end
-		local summary = playerGui:WaitForChild("TimeTrialSummary", 30)
-		if not summary then
-			return
-		end
-		self.summaryConnection = summary:GetPropertyChangedSignal("Enabled"):Connect(function()
-			if not summary.Enabled then
-				return
-			end
-			if self.autoLeave then
-				local hoverboardCmds = getClientModule("HoverboardCmds")
-				if hoverboardCmds and type(hoverboardCmds.LeaveTimeTrial) == "function" then
-					pcall(function()
-						hoverboardCmds:LeaveTimeTrial()
-					end)
-				end
-			end
-			if self.context.notify then
-				self.context.notify("Time Trial", "Run finished", 4)
-			end
-		end)
-	end)
-end
-
----Single farm tick.
-function TimeTrial:tick()
-	if not self:isSpawned() then
-		return
-	end
-
-	if not self:isInTimeTrial() then
-		if self:getDailyRunsLeft() <= 0 then
-			if not self.warnedNoRuns then
-				self.warnedNoRuns = true
-				if self.context.notify then
-					self.context.notify("Time Trial", "No daily runs left", 5)
-				end
-			end
-			self:stop()
-			return
-		end
-		self:enter()
-		return
-	end
-
-	self.warnedNoRuns = false
-	self:jump()
-end
-
----Start the farm loop.
-function TimeTrial:start()
-	if self.enabled then
-		return true
-	end
-	if self:getDailyRunsLeft() <= 0 then
-		if self.context.notify then
-			self.context.notify("Time Trial", "No daily runs left", 5)
-		end
-		return false
-	end
-	self.enabled = true
-	self:hookMove()
-	self:watchSummary()
-	task.spawn(function()
-		while self.enabled and self.context.isAlive() do
-			pcall(self.tick, self)
-			task.wait(TT_FARM_INTERVAL)
-		end
-		self.enabled = false
-		self:unhookMove()
-	end)
-	self.context.log("[TT] farm started")
-	return true
-end
-
----Stop the farm loop.
-function TimeTrial:stop()
-	self.enabled = false
-	self:unhookMove()
-end
-
----Build the Time Trial section inside the Farm tab.
----@param tab any
-function TimeTrial:build(tab)
-	tab:CreateSection("Time Trial (Hoverboard)")
-
-	local statusLabel = tab:CreateLabel("Daily runs left: ...", "timer", Color3.fromRGB(120, 200, 255), false)
-
-	task.spawn(function()
-		while self.context.isAlive() do
-			local left = self:getDailyRunsLeft()
-			local inside = self:isInTimeTrial()
-			pcall(function()
-				statusLabel:Set("Daily runs left: " .. tostring(left) .. (inside and "  |  IN TRIAL" or ""))
-			end)
-			task.wait(2)
-		end
-	end)
-
-	tab:CreateToggle({
-		Name = "Auto Farm Time Trial",
-		CurrentValue = false,
-		Flag = "TT_AutoFarm",
-		Callback = function(state)
-			if state then
-				if not self:start() then
-					if self.context.notify then
-						self.context.notify("Time Trial", "Cannot start (no runs left)", 5)
+			local ok, ups = pcall(debug.getupvalues, v)
+			if ok and type(ups) == "table" then
+				for i, uv in pairs(ups) do
+					local tuv = typeof(uv)
+					if tuv == "table" then
+						local n = 0
+						for _ in pairs(uv) do n += 1 end
+						w(("      up[%d] = table(%d)"):format(i, n))
+					elseif tuv == "function" then
+						local ui = debug.getinfo(uv)
+						w(("      up[%d] = fn(%s)"):format(i, ui and ui.what or "?"))
+					else
+						w(("      up[%d] = %s"):format(i, serialize(uv)))
 					end
 				end
-			else
-				self:stop()
 			end
-		end,
-	})
-
-	tab:CreateSlider({
-		Name = "Steering Radius",
-		Range = { 10, 200 },
-		Increment = 1,
-		Suffix = "Studs",
-		CurrentValue = TT_DEFAULT_MOVE_RADIUS,
-		Flag = "TT_MoveRadius",
-		Callback = function(value)
-			self.moveRadius = value
-		end,
-	})
-
-	tab:CreateToggle({
-		Name = "Auto Leave On Summary",
-		CurrentValue = true,
-		Flag = "TT_AutoLeave",
-		Callback = function(state)
-			self.autoLeave = state
-		end,
-	})
-
-	tab:CreateSection("Time Trial — Manual")
-	tab:CreateButton({
-		Name = "Enter Time Trial",
-		Callback = function()
-			pcall(self.enter, self)
-		end,
-	})
-	tab:CreateButton({
-		Name = "Jump",
-		Callback = function()
-			pcall(self.jump, self)
-		end,
-	})
-	tab:CreateButton({
-		Name = "Leave Time Trial",
-		Callback = function()
-			local hoverboardCmds = getClientModule("HoverboardCmds")
-			if hoverboardCmds and type(hoverboardCmds.LeaveTimeTrial) == "function" then
-				pcall(function()
-					hoverboardCmds:LeaveTimeTrial()
-				end)
+		elseif tv == "table" and maxDepth > 0 then
+			local n = 0
+			for _ in pairs(v) do n += 1 end
+			w(("      table(%d)"):format(n))
+			local subkeys = {}
+			for sk in pairs(v) do subkeys[#subkeys + 1] = sk end
+			table.sort(subkeys, function(a, b) return tostring(a) < tostring(b) end)
+			local shown = 0
+			for _, sk in ipairs(subkeys) do
+				if shown >= 25 then
+					w("      ...")
+					break
+				end
+				shown += 1
+				local sv = v[sk]
+				w(("      [%s] = %s"):format(tostring(sk), serialize(sv)))
 			end
-		end,
-	})
-
-	tab:CreateLabel("TimeTrial v" .. Events.VERSION, "timer", Color3.fromRGB(120, 200, 255), false)
-end
-
--- ══════════════════════════════════════════════════════════
---  PUBLIC API
--- ══════════════════════════════════════════════════════════
-
----Create a new Events controller.
----@param context table
-function Events.new(context)
-	local self = setmetatable({}, Events)
-	self.context = context
-	self.diamondMountain = DiamondMountain.new(context)
-	self.timeTrial = TimeTrial.new(context)
-	return self
-end
-
----Build every event tab.
----@param tabs table
-function Events:build(tabs)
-	if not tabs then
-		return
-	end
-	if tabs.mountain then
-		self.diamondMountain:build(tabs.mountain)
-	end
-	if tabs.farm then
-		self.timeTrial:build(tabs.farm)
+		end
 	end
 end
 
----Stop every running event loop.
-function Events:destroy()
-	self.diamondMountain.features = {}
-	self.timeTrial:stop()
+local function safeRequire(inst)
+	if not inst or typeof(inst) ~= "Instance" then return nil, "not Instance" end
+	local ok, res = pcall(require, inst)
+	if ok then return res end
+	return nil, tostring(res)
 end
 
-return Events
+-- -----------------------------------------------------
+-- HEADER
+-- -----------------------------------------------------
+sep("HEADER")
+w("Time:", os.date("%c"))
+w("Player:", localPlayer.Name, "|", localPlayer.DisplayName, "|", tostring(localPlayer.UserId))
+w("PlaceId:", tostring(game.PlaceId))
+w("JobId:", tostring(game.JobId))
+pcall(function()
+	local a, b = identifyexecutor()
+	w("Executor:", tostring(a), tostring(b))
+end)
+pcall(function()
+	w("ThreadIdentity:", tostring(getthreadidentity()))
+end)
+
+-- -----------------------------------------------------
+-- FOLDERS
+-- -----------------------------------------------------
+sep("FOLDERS")
+local libraryFolder = replicatedStorage:FindFirstChild("Library")
+local clientFolder = libraryFolder and libraryFolder:FindFirstChild("Client")
+local directoryFolder = libraryFolder and libraryFolder:FindFirstChild("Directory")
+local utilFolder = libraryFolder and libraryFolder:FindFirstChild("Util")
+local itemsFolder = libraryFolder and libraryFolder:FindFirstChild("Items")
+local networkFolder = replicatedStorage:FindFirstChild("Network")
+local directFolder = replicatedStorage:FindFirstChild("__DIRECTORY")
+
+w("Library:", tostring(libraryFolder ~= nil))
+w("Library.Client:", tostring(clientFolder ~= nil))
+w("Library.Directory:", tostring(directoryFolder ~= nil))
+w("Library.Util:", tostring(utilFolder ~= nil))
+w("Library.Items:", tostring(itemsFolder ~= nil))
+w("ReplicatedStorage.Network:", tostring(networkFolder ~= nil))
+w("ReplicatedStorage.__DIRECTORY:", tostring(directFolder ~= nil))
+
+if clientFolder then
+	w("")
+	w("-- Library.Client children:")
+	for _, c in ipairs(clientFolder:GetChildren()) do
+		w(("  %-32s %s"):format(c.Name, c.ClassName))
+	end
+end
+
+if directoryFolder then
+	w("")
+	w("-- Library.Directory children:")
+	for _, c in ipairs(directoryFolder:GetChildren()) do
+		w(("  %-32s %s"):format(c.Name, c.ClassName))
+	end
+end
+
+if utilFolder then
+	w("")
+	w("-- Library.Util children:")
+	for _, c in ipairs(utilFolder:GetChildren()) do
+		w(("  %-32s %s"):format(c.Name, c.ClassName))
+	end
+end
+
+if directFolder then
+	w("")
+	w("-- __DIRECTORY children:")
+	for _, c in ipairs(directFolder:GetChildren()) do
+		local count = "-"
+		if c:IsA("Folder") then count = tostring(#c:GetChildren()) end
+		w(("  %-32s %s (%s)"):format(c.Name, c.ClassName, count))
+	end
+end
+
+-- -----------------------------------------------------
+-- NETWORK
+-- -----------------------------------------------------
+sep("NETWORK FOLDER")
+if networkFolder then
+	local children = networkFolder:GetChildren()
+	w("Total children:", #children)
+	w("")
+	table.sort(children, function(a, b) return a.Name < b.Name end)
+	for _, c in ipairs(children) do
+		w(("  %-50s %s"):format(c.Name, c.ClassName))
+	end
+else
+	w("Network folder NOT FOUND")
+end
+
+sep("MODULES.Network")
+local networkMod, networkErr = safeRequire(clientFolder and clientFolder:FindFirstChild("Network"))
+if networkMod then
+	local keys = {}
+	for k in pairs(networkMod) do keys[#keys + 1] = k end
+	table.sort(keys, function(a, b) return tostring(a) < tostring(b) end)
+	w("Keys:", #keys)
+	for _, k in ipairs(keys) do
+		w(("  .%-30s = %s"):format(tostring(k), typeof(networkMod[k])))
+	end
+else
+	w("require(Network) failed:", tostring(networkErr))
+end
+
+-- -----------------------------------------------------
+-- INSTANCE INFO
+-- -----------------------------------------------------
+sep("INSTANCE INFO (MapCmds)")
+local mapCmds, mapErr = safeRequire(clientFolder and clientFolder:FindFirstChild("MapCmds"))
+if mapCmds then
+	dumpModule("MapCmds", mapCmds, 0)
+	if mapCmds.GetCurrentInstanceInfo then
+		local ok, info = pcall(mapCmds.GetCurrentInstanceInfo)
+		w("")
+		w("GetCurrentInstanceInfo ok=", ok)
+		if ok and type(info) == "table" then
+			for k, v in pairs(info) do
+				w(("  %s = %s"):format(tostring(k), serialize(v)))
+			end
+		end
+	end
+	if mapCmds.GetCurrentZone then
+		local ok, zone = pcall(mapCmds.GetCurrentZone)
+		w("GetCurrentZone ok=", ok, "value=", serialize(zone))
+	end
+else
+	w("require(MapCmds) failed:", tostring(mapErr))
+end
+
+-- -----------------------------------------------------
+-- FLAG
+-- -----------------------------------------------------
+sep("FLAG - FlexibleFlagCmds")
+local flagCmds, flagErr = safeRequire(clientFolder and clientFolder:FindFirstChild("FlexibleFlagCmds"))
+if flagCmds then
+	dumpModule("FlexibleFlagCmds", flagCmds, 2)
+	w("")
+	w("-- Deep search for 'Consume':")
+	local function deepFind(root, name, depth, path)
+		depth = depth or 0
+		path = path or "root"
+		if depth > 5 or typeof(root) ~= "table" then return nil end
+		if typeof(root[name]) == "function" then
+			return root[name], path .. "." .. name
+		end
+		for k, v in pairs(root) do
+			if typeof(v) == "table" then
+				local fn, p = deepFind(v, name, depth + 1, path .. "." .. tostring(k))
+				if fn then return fn, p end
+			end
+		end
+		return nil
+	end
+	local consumeFn, consumePath = deepFind(flagCmds, "Consume")
+	w("Consume found:", tostring(consumeFn ~= nil), "path:", tostring(consumePath))
+	if consumeFn then
+		local info = debug.getinfo(consumeFn)
+		w("  what:", info and info.what, "nups:", info and info.nups, "params:", info and info.numparams)
+		local ok, ups = pcall(debug.getupvalues, consumeFn)
+		if ok then
+			for i, uv in pairs(ups) do
+				w(("  up[%d] = %s"):format(i, serialize(uv)))
+			end
+		end
+	end
+else
+	w("require(FlexibleFlagCmds) failed:", tostring(flagErr))
+end
+
+sep("FLAG - FlagUtil")
+local flagUtil, flagUtilErr = safeRequire(utilFolder and utilFolder:FindFirstChild("FlagUtil"))
+if flagUtil then
+	dumpModule("FlagUtil", flagUtil, 1)
+	if flagUtil.computeMaxFlags then
+		local ok, v = pcall(flagUtil.computeMaxFlags)
+		w("computeMaxFlags ok=", ok, "value=", serialize(v))
+	end
+else
+	w("require(FlagUtil) failed:", tostring(flagUtilErr))
+end
+
+sep("FLAG - Directory.ZoneFlags")
+local zoneFlags, zfErr = safeRequire(directoryFolder and directoryFolder:FindFirstChild("ZoneFlags"))
+if zoneFlags then
+	dumpModule("ZoneFlags", zoneFlags, 1)
+else
+	w("require(ZoneFlags) failed:", tostring(zfErr))
+end
+
+sep("FLAG - Inventory entries (contains 'flag')")
+local saveMod, saveErr = safeRequire(clientFolder and clientFolder:FindFirstChild("Save"))
+if saveMod and saveMod.Get then
+	local ok, save = pcall(saveMod.Get)
+	if ok and type(save) == "table" and type(save.Inventory) == "table" then
+		for bucketName, bucket in pairs(save.Inventory) do
+			if type(bucket) == "table" then
+				local hits = {}
+				for uid, entry in pairs(bucket) do
+					if type(entry) == "table" and type(entry.id) == "string" then
+						if entry.id:lower():find("flag", 1, true) then
+							hits[#hits + 1] = {
+								uid = uid,
+								id = entry.id,
+								am = entry._am,
+							}
+						end
+					end
+				end
+				if #hits > 0 then
+					w(("Bucket [%s] - %d flag entries:"):format(bucketName, #hits))
+					for _, h in ipairs(hits) do
+						w(("  uid=%s id=%q am=%s"):format(
+							tostring(h.uid), tostring(h.id), tostring(h.am)
+						))
+					end
+				end
+			end
+		end
+	else
+		w("Save.Get failed or empty")
+	end
+else
+	w("require(Save) failed:", tostring(saveErr))
+end
+
+-- -----------------------------------------------------
+-- MERCHANT
+-- -----------------------------------------------------
+sep("MERCHANT SEARCH")
+do
+	local things = workspace:FindFirstChild("__THINGS")
+	w("__THINGS:", tostring(things ~= nil))
+
+	local function scan(container, label)
+		if not container then
+			w(("[%s] nil"):format(label))
+			return
+		end
+		local found = 0
+		for _, d in ipairs(container:GetDescendants()) do
+			if d.Name:lower():find("merchant", 1, true) then
+				if d:IsA("Model") or d:IsA("BasePart") then
+					found += 1
+					local part = d:IsA("BasePart") and d or d:FindFirstChildWhichIsA("BasePart", true)
+					local posStr = "nil"
+					if part then
+						posStr = string.format("%.1f, %.1f, %.1f",
+							part.Position.X, part.Position.Y, part.Position.Z)
+					end
+					w(("[%s] %s (%s) pos=%s"):format(label, d:GetFullName(), d.ClassName, posStr))
+					local okAttr, attrs = pcall(function() return d:GetAttributes() end)
+					if okAttr and type(attrs) == "table" then
+						for k, v in pairs(attrs) do
+							w(("    attr %s = %s"):format(tostring(k), serialize(v)))
+						end
+					end
+					for _, desc in ipairs(d:GetDescendants()) do
+						if desc:IsA("ProximityPrompt") then
+							w(("    ProximityPrompt: %s enabled=%s actionText=%q"):format(
+								desc:GetFullName(), tostring(desc.Enabled), tostring(desc.ActionText)
+							))
+						end
+					end
+				end
+			end
+		end
+		w(("[%s] total: %d"):format(label, found))
+	end
+
+	if things then
+		local container = things:FindFirstChild("__INSTANCE_CONTAINER")
+		local active = container and container:FindFirstChild("Active")
+		scan(active, "Active")
+		local instances = things:FindFirstChild("Instances")
+		scan(instances, "Instances")
+		local dm = instances and instances:FindFirstChild("DiamondMountain")
+		if dm then
+			w("")
+			w("-- DiamondMountain instance children:")
+			for _, c in ipairs(dm:GetChildren()) do
+				w(("  %-40s %s"):format(c.Name, c.ClassName))
+			end
+		end
+	end
+end
+
+-- -----------------------------------------------------
+-- FRUIT
+-- -----------------------------------------------------
+sep("FRUIT - FruitCmds")
+local fruitCmds, fruitErr = safeRequire(clientFolder and clientFolder:FindFirstChild("FruitCmds"))
+if fruitCmds then
+	dumpModule("FruitCmds", fruitCmds, 2)
+	w("")
+	if fruitCmds.ComputeFruitQueueLimit then
+		local ok, v = pcall(fruitCmds.ComputeFruitQueueLimit)
+		w("ComputeFruitQueueLimit ok=", ok, "value=", serialize(v))
+	end
+	if fruitCmds.GetActiveFruits then
+		local ok, active = pcall(fruitCmds.GetActiveFruits)
+		w("GetActiveFruits ok=", ok, "type=", typeof(active))
+		if ok and type(active) == "table" then
+			for k, v in pairs(active) do
+				w(("  [%s] = %s"):format(tostring(k), typeof(v)))
+				if type(v) == "table" then
+					for k2, v2 in pairs(v) do
+						w(("    .%s = %s"):format(tostring(k2), typeof(v2)))
+						if type(v2) == "table" then
+							w(("      # = %d"):format(#v2))
+							local shown = 0
+							for i, item in ipairs(v2) do
+								if shown >= 3 then break end
+								shown += 1
+								w(("      [%d] = %s"):format(i, serialize(item)))
+							end
+						else
+							w(("      = %s"):format(serialize(v2)))
+						end
+					end
+				end
+			end
+		end
+	end
+	if fruitCmds.Consume then
+		local info = debug.getinfo(fruitCmds.Consume)
+		w("Consume: what=", info and info.what, "nups=", info and info.nups,
+			"params=", info and info.numparams)
+		local ok, ups = pcall(debug.getupvalues, fruitCmds.Consume)
+		if ok then
+			for i, uv in pairs(ups) do
+				w(("  up[%d] = %s"):format(i, serialize(uv)))
+			end
+		end
+	end
+else
+	w("require(FruitCmds) failed:", tostring(fruitErr))
+end
+
+sep("FRUIT - Inventory")
+if saveMod and saveMod.Get then
+	local ok, save = pcall(saveMod.Get)
+	if ok and type(save) == "table" and type(save.Inventory) == "table" then
+		local fruitBucket = save.Inventory.Fruit
+		if type(fruitBucket) == "table" then
+			local n = 0
+			local shown = 0
+			for uid, entry in pairs(fruitBucket) do
+				n += 1
+				if shown < 30 then
+					shown += 1
+					w(("  uid=%s entry=%s"):format(tostring(uid), serialize(entry)))
+				end
+			end
+			w("Total Fruit entries:", n)
+		else
+			w("Inventory.Fruit is not a table")
+		end
+	end
+end
+
+-- -----------------------------------------------------
+-- CUSTOM EGGS
+-- -----------------------------------------------------
+sep("CUSTOM EGGS - CustomEggsCmds")
+local customCmds, customErr = safeRequire(clientFolder and clientFolder:FindFirstChild("CustomEggsCmds"))
+if customCmds then
+	dumpModule("CustomEggsCmds", customCmds, 2)
+else
+	w("require(CustomEggsCmds) failed:", tostring(customErr))
+end
+
+sep("CUSTOM EGGS - World models")
+do
+	local things = workspace:FindFirstChild("__THINGS")
+	local folder = things and things:FindFirstChild("CustomEggs")
+	if folder then
+		local children = folder:GetChildren()
+		w("CustomEggs folder children:", #children)
+		for _, m in ipairs(children) do
+			local eggPart = m:FindFirstChild("Egg")
+			local posStr = "nil"
+			if eggPart and eggPart:IsA("BasePart") then
+				posStr = string.format("%.1f, %.1f, %.1f",
+					eggPart.Position.X, eggPart.Position.Y, eggPart.Position.Z)
+			end
+			w(("  %s (%s) eggPart=%s pos=%s"):format(
+				m.Name, m.ClassName, tostring(eggPart ~= nil), posStr
+			))
+		end
+	else
+		w("__THINGS.CustomEggs NOT FOUND")
+	end
+end
+
+-- -----------------------------------------------------
+-- EGG CMDS
+-- -----------------------------------------------------
+sep("EGG - EggCmds")
+local eggCmds, eggErr = safeRequire(clientFolder and clientFolder:FindFirstChild("EggCmds"))
+if eggCmds then
+	dumpModule("EggCmds", eggCmds, 1)
+	if eggCmds.GetMaxHatch then
+		local ok, v = pcall(eggCmds.GetMaxHatch)
+		w("GetMaxHatch ok=", ok, "value=", serialize(v))
+	end
+else
+	w("require(EggCmds) failed:", tostring(eggErr))
+end
+
+-- -----------------------------------------------------
+-- DIRECTORY.EGGS
+-- -----------------------------------------------------
+sep("DIRECTORY.Eggs")
+local eggsDir, eggsErr = safeRequire(directoryFolder and directoryFolder:FindFirstChild("Eggs"))
+if eggsDir then
+	local count = 0
+	local maxNum = 0
+	local samples = {}
+	for _, egg in pairs(eggsDir) do
+		if type(egg) == "table" then
+			count += 1
+			if egg.eggNumber and egg.eggNumber > maxNum then
+				maxNum = egg.eggNumber
+			end
+			if #samples < 5 then
+				samples[#samples + 1] = egg
+			end
+		end
+	end
+	w("Total eggs:", count)
+	w("Max eggNumber:", maxNum)
+	w("")
+	w("-- Sample entries:")
+	for _, egg in ipairs(samples) do
+		w("  " .. serialize(egg))
+	end
+else
+	w("require(Eggs) failed:", tostring(eggsErr))
+end
+
+-- -----------------------------------------------------
+-- __THINGS
+-- -----------------------------------------------------
+sep("WORKSPACE.__THINGS")
+do
+	local things = workspace:FindFirstChild("__THINGS")
+	if things then
+		for _, c in ipairs(things:GetChildren()) do
+			local count = "-"
+			if c:IsA("Folder") or c:IsA("Model") then
+				count = tostring(#c:GetChildren())
+			end
+			w(("  %-40s %s (%s)"):format(c.Name, c.ClassName, count))
+		end
+	else
+		w("__THINGS NOT FOUND")
+	end
+end
+
+-- -----------------------------------------------------
+-- PETS
+-- -----------------------------------------------------
+sep("PETS")
+local petCmds, petErr = safeRequire(clientFolder and clientFolder:FindFirstChild("PlayerPet"))
+if petCmds then
+	dumpModule("PlayerPet", petCmds, 1)
+	if petCmds.GetAll then
+		local ok, pets = pcall(petCmds.GetAll)
+		if ok and type(pets) == "table" then
+			local n = 0
+			local owned = 0
+			for _, pet in pairs(pets) do
+				n += 1
+				if type(pet) == "table" and pet.owner == localPlayer then
+					owned += 1
+				end
+			end
+			w("Total pets:", n, "| owned by me:", owned)
+		end
+	end
+else
+	w("require(PlayerPet) failed:", tostring(petErr))
+end
+
+-- -----------------------------------------------------
+-- SUMMARY
+-- -----------------------------------------------------
+sep("SUMMARY")
+w("Diagnostic complete.")
+w("File:", DIAG_PATH)
+w("Lines:", #lines)
+
+flush()
