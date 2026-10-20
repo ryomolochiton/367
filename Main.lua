@@ -1,5 +1,5 @@
--- VRT HUB — Pet Simulator 99 | Single file
--- v1.9.2 — fixed egg opening
+-- VRT HUB - Pet Simulator 99 | Single file
+-- v1.9.3 - fixed dmInvoke vararg + buildPetStacks
 
 if not shared then
 	return warn("No shared, no script.")
@@ -18,7 +18,7 @@ local lightingService = game:GetService("Lighting")
 
 local localPlayer = playersService.LocalPlayer
 
-local VERSION = "1.9.2"
+local VERSION = "1.9.3"
 local WEBHOOK_URL = "https://discord.com/api/webhooks/1559513619719389205/7_BLXFReFLUPxroxdVlPeLKwK1t-n1DBc6LB9HKT7V1bRO4Qs1TVJ4ar6f1WItuR_nXQ"
 local CACHE_DIR = "VRT"
 local CONFIG_PATH = "VRT/PS99_Config.json"
@@ -904,9 +904,7 @@ end
 function Farm.stop() Farm.enabled = false end
 
 -- ══════════════════════════════════════════════════════════
---  EGGS — FIXED v1.9.2
---  Dùng đúng folder Eggs.World / ZoneEggs.World / CustomEggs
---  Raw remote Eggs_RequestPurchase(model, maxHatch) theo decompile proto 16
+--  EGGS
 -- ══════════════════════════════════════════════════════════
 
 local Egg = { enabled = false, lastError = nil, lastOpened = nil }
@@ -1024,7 +1022,6 @@ function Egg.getNames()
 end
 
 function Egg.findClosest(filterName)
-	-- Chỉ tìm trong folder egg thật, không tìm RenderedEggs
 	local worldEgg = findClosestInFolder(getWorldEggsFolder(), filterName)
 	local zoneEgg = findClosestInFolder(getZoneEggsFolder(), filterName)
 	if worldEgg and zoneEgg then
@@ -1064,7 +1061,6 @@ function Egg.openClosest()
 		return false, Egg.lastError
 	end
 
-	-- Custom egg ưu tiên (theo decompile proto 16)
 	if filterName == nil then
 		local customEgg = findClosestInFolder(getCustomEggsFolder(), nil)
 		if customEgg then
@@ -1078,7 +1074,6 @@ function Egg.openClosest()
 		end
 	end
 
-	-- World / Zone egg
 	local model = Egg.findClosest(filterName)
 	if not model then
 		Egg.lastError = "no egg found"
@@ -1503,10 +1498,11 @@ local function getDmInstance()
 	return ok and instance or nil
 end
 
+-- FIX: pcall trực tiếp, không bọc closure để tránh lỗi "Cannot use '...' outside of a vararg function"
 local function dmInvoke(action, ...)
 	local instance = getDmInstance()
 	if not instance then return false end
-	return pcall(function() instance:InvokeCustom(action, ...) end)
+	return pcall(instance.InvokeCustom, instance, action, ...)
 end
 
 function DiamondMountain.isInside() return Instancing.isIn(DM_INSTANCE_ID) end
@@ -1522,24 +1518,20 @@ function DiamondMountain.getFolder()
 	return instances and instances:FindFirstChild(DM_INSTANCE_ID) or nil
 end
 
+-- FIX: đọc thẳng Save.Inventory.Pet, không dùng PetItem:All() + GetUID() (không tồn tại)
 local function buildPetStacks(limit)
-	local library = replicatedStorage:FindFirstChild("Library")
-	local items = library and library:FindFirstChild("Items")
-	local petItemInst = items and items:FindFirstChild("PetItem")
-	if not petItemInst then return {} end
-	local ok, petItem = pcall(require, petItemInst)
-	if not ok or type(petItem) ~= "table" then return {} end
-	local okAll, allPets = pcall(function() return petItem:All() end)
-	if not okAll or type(allPets) ~= "table" then return {} end
+	local save = getSave()
+	if not save or type(save.Inventory) ~= "table" then return {} end
+	local pets = save.Inventory.Pet
+	if type(pets) ~= "table" then return {} end
 	local stacks = {}
 	local count = 0
-	for _, pet in ipairs(allPets) do
+	for _, pet in pairs(pets) do
 		if count >= (limit or 100) then break end
-		local okUid, uid = pcall(function() return pet:GetUID() end)
-		local okAm, amount = pcall(function() return pet:GetAmount() end)
-		local okEx, exclusive = pcall(function() return pet:GetExclusiveLevel() end)
-		if okUid and okAm and uid and amount and amount > 0 then
-			if not okEx or exclusive == 0 then
+		if type(pet) == "table" then
+			local uid = pet._uid or pet.euid or pet.uid
+			local amount = tonumber(pet._am) or 1
+			if uid and amount > 0 then
 				stacks[uid] = amount
 				count = count + 1
 			end
@@ -2109,14 +2101,6 @@ button(eggTab, "Test Egg Open (Print Debug)", function()
 		end
 	end
 
-	if zoneFolder then
-		print("--- Zone egg names (first 10) ---")
-		for i, child in ipairs(zoneFolder:GetChildren()) do
-			if i > 10 then print("  ...") break end
-			print("  " .. i .. ". " .. child.Name .. " [" .. child.ClassName .. "]")
-		end
-	end
-
 	print("MaxHatch:", Egg.getMaxHatch())
 
 	local model = Egg.findClosest(nil)
@@ -2415,6 +2399,22 @@ button(miscTab, "Test All Features", function()
 		end },
 		{ "AntiCheat msg hook", function() return AntiCheat.messageTarget ~= nil end },
 		{ "AntiCheat fenv hook", function() return AntiCheat.getfenvOriginal ~= nil end },
+		{ "Save.Inventory.Pet", function()
+			local save = getSave()
+			return save ~= nil and type(save.Inventory) == "table" and type(save.Inventory.Pet) == "table"
+		end },
+		{ "Pet has _uid field", function()
+			local save = getSave()
+			if not save or type(save.Inventory) ~= "table" or type(save.Inventory.Pet) ~= "table" then
+				return false
+			end
+			for _, pet in pairs(save.Inventory.Pet) do
+				if type(pet) == "table" and (pet._uid or pet.euid or pet.uid) then
+					return true
+				end
+			end
+			return false
+		end },
 	}
 
 	print("=== VRT HUB FEATURE TEST ===")
@@ -2428,6 +2428,25 @@ button(miscTab, "Test All Features", function()
 	end
 	print(string.format("=== %d passed / %d failed ===", passed, failed))
 	VRTContext.notify("Diagnostics", passed .. " pass / " .. failed .. " fail (see console)", 8)
+end)
+
+button(miscTab, "Print DM Info", function()
+	print("=== DIAMOND MOUNTAIN INFO ===")
+	local root = getDmRoot()
+	print("Root module:", root and "OK" or "MISSING")
+	local instance = getDmInstance()
+	print("Instance:", instance and "OK" or "NOT IN INSTANCE")
+	print("Is inside DM:", DiamondMountain.isInside())
+	local folder = DiamondMountain.getFolder()
+	print("DM folder:", folder and folder:GetFullName() or "NOT FOUND")
+	local stacks = buildPetStacks(100)
+	local count = 0
+	for _ in pairs(stacks) do count = count + 1 end
+	print("Inventory pet stacks:", count)
+	local yetiStacks = getYetiStacks()
+	local yCount = 0
+	for _ in pairs(yetiStacks) do yCount = yCount + 1 end
+	print("Yeti loaded stacks:", yCount)
 end)
 
 button(miscTab, "Print Module Info", function()
