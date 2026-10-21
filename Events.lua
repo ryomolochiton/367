@@ -1,7 +1,7 @@
 -- =====================================================
--- VRT MERCHANT FIX — Standalone Test Script
--- Test mua từ xa + teleport tới PAD chính xác + click Buy
--- Save -> VRT/VRT_MerchantFix.txt
+-- VRT EXPEDITION DIAGNOSTIC v2 — Save to file (bulletproof)
+-- Save -> VRT/VRT_Expedition.txt
+-- Mỗi section đều flush ngay, lỗi 1 section không ảnh hưởng section khác
 -- CHẠY KHI ĐANG Ở TRONG DIAMOND MOUNTAIN
 -- =====================================================
 
@@ -12,10 +12,10 @@ local localPlayer = playersService.LocalPlayer
 local libraryFolder = replicatedStorage:WaitForChild("Library")
 local clientFolder = libraryFolder:WaitForChild("Client")
 local utilFolder = libraryFolder:FindFirstChild("Util")
-local networkFolder = replicatedStorage:WaitForChild("Network")
+local networkFolder = replicatedStorage:FindFirstChild("Network")
 
 local DIAG_FOLDER = "VRT"
-local DIAG_PATH = "VRT/VRT_MerchantFix.txt"
+local DIAG_PATH = "VRT/VRT_Expedition.txt"
 
 pcall(function()
 	if not isfolder(DIAG_FOLDER) then
@@ -46,10 +46,15 @@ local function flush()
 	local content = table.concat(lines, "\n")
 	local ok, err = pcall(writefile, DIAG_PATH, content)
 	if ok then
-		print(("[VRT] Saved -> %s (%d bytes)"):format(DIAG_PATH, #content))
+		print(("[VRT-DIAG] Saved -> %s (%d bytes, %d lines)"):format(
+			DIAG_PATH, #content, #lines
+		))
+		return true
 	else
-		warn("[VRT] writefile failed: " .. tostring(err))
+		warn("[VRT-DIAG] writefile failed: " .. tostring(err))
 		pcall(setclipboard, content)
+		print("[VRT-DIAG] Copied to clipboard instead.")
+		return false
 	end
 end
 
@@ -64,6 +69,102 @@ local function getRoot()
 	return character and character:FindFirstChild("HumanoidRootPart") or nil
 end
 
+local function serialize(value, depth, seen)
+	depth = depth or 0
+	seen = seen or {}
+	if depth > 4 then return "..." end
+	local t = typeof(value)
+	if t == "string" then
+		if #value > 200 then
+			return string.format("%q..(%d)", value:sub(1, 200), #value)
+		end
+		return string.format("%q", value)
+	elseif t == "number" or t == "boolean" or t == "nil" then
+		return tostring(value)
+	elseif t == "Instance" then
+		return value:GetFullName()
+	elseif t == "Vector3" then
+		return string.format("Vector3(%.1f,%.1f,%.1f)", value.X, value.Y, value.Z)
+	elseif t == "CFrame" then
+		local p = value.Position
+		return string.format("CFrame(%.1f,%.1f,%.1f)", p.X, p.Y, p.Z)
+	elseif t == "Color3" then
+		return string.format("Color3(%d,%d,%d)", value.R * 255, value.G * 255, value.B * 255)
+	elseif t == "EnumItem" then
+		return tostring(value)
+	elseif t == "function" then
+		local info = debug.getinfo(value)
+		return string.format("<fn %s>", info and info.what or "?")
+	elseif t == "table" then
+		if seen[value] then return "<cycle>" end
+		seen[value] = true
+		local parts = {}
+		local count = 0
+		for k, v in pairs(value) do
+			count += 1
+			if count > 30 then
+				parts[#parts + 1] = "..."
+				break
+			end
+			parts[#parts + 1] = string.format("[%s]=%s",
+				serialize(k, depth + 1, seen),
+				serialize(v, depth + 1, seen))
+		end
+		seen[value] = nil
+		return "{" .. table.concat(parts, ", ") .. "}"
+	end
+	return tostring(value)
+end
+
+local function dumpFunction(label, fn, upDepth)
+	upDepth = upDepth or 1
+	if typeof(fn) ~= "function" then
+		w(("[%s] = %s"):format(label, typeof(fn)))
+		return
+	end
+	local info = debug.getinfo(fn)
+	w(("[%s] fn | what=%s params=%d nups=%d vararg=%s"):format(
+		label, tostring(info and info.what),
+		info and info.numparams or 0,
+		info and info.nups or 0,
+		tostring(info and info.is_vararg)
+	))
+	if upDepth > 0 then
+		local ok, ups = pcall(debug.getupvalues, fn)
+		if ok and typeof(ups) == "table" then
+			for i, uv in pairs(ups) do
+				local tuv = typeof(uv)
+				if tuv == "table" then
+					local n = 0
+					for _ in pairs(uv) do n += 1 end
+					w(("  up[%d] = table(%d)"):format(i, n))
+					if upDepth > 1 then
+						local subkeys = {}
+						for sk in pairs(uv) do subkeys[#subkeys + 1] = sk end
+						table.sort(subkeys, function(a, b) return tostring(a) < tostring(b) end)
+						local shown = 0
+						for _, sk in ipairs(subkeys) do
+							if shown >= 20 then
+								w("      ...")
+								break
+							end
+							shown += 1
+							w(("      [%s] = %s"):format(tostring(sk), serialize(uv[sk])))
+						end
+					end
+				elseif tuv == "function" then
+					local ui = debug.getinfo(uv)
+					w(("  up[%d] = fn(%s)"):format(i, ui and ui.what or "?"))
+				elseif tuv == "Instance" then
+					w(("  up[%d] = %s"):format(i, uv:GetFullName()))
+				else
+					w(("  up[%d] = %s"):format(i, serialize(uv)))
+				end
+			end
+		end
+	end
+end
+
 local function invoke(name, ...)
 	local network = safeRequire(clientFolder:FindFirstChild("Network"))
 	if not network or not network.Invoke then return false, "no network" end
@@ -71,425 +172,561 @@ local function invoke(name, ...)
 	return ok, result
 end
 
+local function fire(name, ...)
+	local network = safeRequire(clientFolder:FindFirstChild("Network"))
+	if not network or not network.Fire then return false, "no network" end
+	local ok, result = pcall(network.Fire, name, ...)
+	return ok, result
+end
+
+-- Wrap section in pcall để 1 section lỗi không kill cả script
+local function section(name, fn)
+	sep(name)
+	local ok, err = pcall(fn)
+	if not ok then
+		w(("[ERROR] " .. tostring(err)))
+	end
+	flush()
+end
+
+-- -----------------------------------------------------
+-- HEADER
+-- -----------------------------------------------------
+section("HEADER", function()
+	w("Time:", os.date("%c"))
+	w("Player:", localPlayer.Name, "|", tostring(localPlayer.UserId))
+	w("PlaceId:", tostring(game.PlaceId))
+	w("JobId:", tostring(game.JobId))
+	pcall(function()
+		local a, b = identifyexecutor()
+		w("Executor:", tostring(a), tostring(b))
+	end)
+
+	local root = getRoot()
+	if root then
+		local p = root.Position
+		w(("Position: %.1f, %.1f, %.1f"):format(p.X, p.Y, p.Z))
+	end
+	w("Save path:", DIAG_PATH)
+end)
+
 -- -----------------------------------------------------
 -- MODULES
 -- -----------------------------------------------------
 local Modules = {
 	Network = safeRequire(clientFolder:FindFirstChild("Network")),
 	DiamondMountainCmds = safeRequire(clientFolder:FindFirstChild("DiamondMountainCmds")),
-	DiamondMountainMerchant = safeRequire(utilFolder and utilFolder:FindFirstChild("DiamondMountainMerchant")),
-	MerchantsDir = safeRequire(libraryFolder:FindFirstChild("Directory") and libraryFolder.Directory:FindFirstChild("Merchants")),
 	MachineScreens = safeRequire(clientFolder:FindFirstChild("MachineScreens")),
 	MachineCmds = safeRequire(clientFolder:FindFirstChild("MachineCmds")),
 }
 
 -- -----------------------------------------------------
--- HEADER
+-- EXPEDITION STRUCTURE
 -- -----------------------------------------------------
-sep("HEADER")
-w("Time:", os.date("%c"))
-w("Player:", localPlayer.Name, "|", tostring(localPlayer.UserId))
+local expedition = nil
+local mountain = nil
+local summit = nil
 
-local root = getRoot()
-if root then
-	local p = root.Position
-	w(("Position: %.1f, %.1f, %.1f"):format(p.X, p.Y, p.Z))
-end
+section("EXPEDITION STRUCTURE", function()
+	local things = workspace:FindFirstChild("__THINGS")
+	local container = things and things:FindFirstChild("__INSTANCE_CONTAINER")
+	local active = container and container:FindFirstChild("Active")
+	mountain = active and active:FindFirstChild("DiamondMountain")
+	summit = mountain and mountain:FindFirstChild("Summit")
+	expedition = summit and summit:FindFirstChild("Expedition")
 
--- -----------------------------------------------------
--- PHASE + PAD INFO
--- -----------------------------------------------------
-sep("PHASE + PAD INFO")
-local dmMerchant = Modules.DiamondMountainMerchant
-local currentCamp = nil
-local padPart = nil
-local padObject = nil
-local padTargetPos = nil
-
-if typeof(dmMerchant) == "table" then
-	local ok, phase = pcall(dmMerchant.Phase)
-	if ok and typeof(phase) == "table" then
-		currentCamp = phase.Camp
-		w(("Phase.Camp = %s | Arrived = %s | From = %s"):format(
-			tostring(phase.Camp), tostring(phase.Arrived), tostring(phase.From)
-		))
-		for k, v in pairs(phase) do
-			w(("  %s = %s"):format(tostring(k), tostring(v)))
-		end
+	if not expedition then
+		w("Expedition NOT FOUND")
+		return
 	end
-end
 
-if currentCamp then
-	local modelName = "TravelingMerchant" .. tostring(currentCamp)
-	local model = workspace:FindFirstChild(modelName, true)
-	if model then
-		w(("Wagon model: %s"):format(model:GetFullName()))
-		padPart = model:FindFirstChild("Pad")
-		if padPart and padPart:IsA("BasePart") then
-			w(("Pad Part: %s"):format(padPart:GetFullName()))
-			w(("  Position: %.2f,%.2f,%.2f"):format(
-				padPart.Position.X, padPart.Position.Y, padPart.Position.Z
-			))
-			w(("  Size: %.2f,%.2f,%.2f"):format(
-				padPart.Size.X, padPart.Size.Y, padPart.Size.Z
-			))
-			w(("  CanCollide: %s | Anchored: %s | Transparency: %.2f"):format(
-				tostring(padPart.CanCollide), tostring(padPart.Anchored),
-				padPart.Transparency
-			))
-			w(("  Attributes:"))
-			for k, v in pairs(padPart:GetAttributes()) do
-				w(("    %s = %s"):format(tostring(k), tostring(v)))
+	w(("Expedition: %s"):format(expedition:GetFullName()))
+	w("")
+	w("-- Expedition children:")
+	for _, child in ipairs(expedition:GetChildren()) do
+		local extra = ""
+		if child:IsA("BasePart") then
+			extra = (" pos=%.1f,%.1f,%.1f"):format(
+				child.Position.X, child.Position.Y, child.Position.Z
+			)
+		elseif child:IsA("Model") then
+			local okP, pivot = pcall(function() return child:GetPivot() end)
+			if okP and pivot then
+				extra = (" pivot=%.1f,%.1f,%.1f"):format(
+					pivot.Position.X, pivot.Position.Y, pivot.Position.Z
+				)
 			end
 		end
+		w(("  %s (%s)%s"):format(child.Name, child.ClassName, extra))
+		w("    Attributes:")
+		local attrs = child:GetAttributes()
+		local n = 0
+		for k, v in pairs(attrs) do
+			n += 1
+			w(("      %s = %s"):format(tostring(k), serialize(v)))
+		end
+		if n == 0 then w("      (none)") end
+	end
+end)
+
+-- -----------------------------------------------------
+-- CLAIMPILLAR STRUCTURE
+-- -----------------------------------------------------
+section("CLAIMPILLAR STRUCTURE", function()
+	if not expedition then
+		w("Expedition not found")
+		return
+	end
+	local claim = expedition:FindFirstChild("ClaimPillar")
+	if not claim then
+		w("ClaimPillar NOT FOUND")
+		return
 	end
 
-	-- Get pad object from feature upvalue
+	w(("ClaimPillar: %s (%s)"):format(claim:GetFullName(), claim.ClassName))
+	w("")
+	w("-- ALL descendants:")
+	for _, d in ipairs(claim:GetDescendants()) do
+		local extra = ""
+		if d:IsA("BasePart") then
+			extra = (" pos=%.1f,%.1f,%.1f size=%.1f,%.1f,%.1f transparency=%.2f"):format(
+				d.Position.X, d.Position.Y, d.Position.Z,
+				d.Size.X, d.Size.Y, d.Size.Z,
+				d.Transparency
+			)
+		elseif d:IsA("ProximityPrompt") then
+			extra = (" enabled=%s actionText=%q objectText=%q holdDuration=%.1f maxDist=%.1f"):format(
+				tostring(d.Enabled), tostring(d.ActionText),
+				tostring(d.ObjectText), d.HoldDuration, d.MaxActivationDistance
+			)
+		elseif d:IsA("ClickDetector") then
+			extra = (" MaxActivationDistance=%.1f"):format(d.MaxActivationDistance)
+		elseif d:IsA("TextButton") or d:IsA("ImageButton") then
+			extra = (" Visible=%s Active=%s"):format(tostring(d.Visible), tostring(d.Active))
+		elseif d:IsA("BillboardGui") then
+			extra = (" Enabled=%s"):format(tostring(d.Enabled))
+		elseif d:IsA("SurfaceGui") then
+			extra = (" Enabled=%s"):format(tostring(d.Enabled))
+		end
+		w(("  %s (%s)%s"):format(d.Name, d.ClassName, extra))
+	end
+
+	w("")
+	w("-- ClaimPillar attributes:")
+	local n = 0
+	for k, v in pairs(claim:GetAttributes()) do
+		n += 1
+		w(("  %s = %s"):format(tostring(k), serialize(v)))
+	end
+	if n == 0 then w("  (none)") end
+end)
+
+-- -----------------------------------------------------
+-- FEATURE('Expedition')
+-- -----------------------------------------------------
+local expeditionFeature = nil
+
+section("FEATURE('Expedition') FULL DUMP", function()
 	local dmCmds = Modules.DiamondMountainCmds
-	if dmCmds and typeof(dmCmds.Feature) == "function" then
-		local okF, feature = pcall(dmCmds.Feature, "Merchant")
-		if okF and typeof(feature) == "table" then
-			local okU, wagons = pcall(debug.getupvalue, feature.OnLeave, 4)
-			if okU and typeof(wagons) == "table" then
-				for _, wagon in pairs(wagons) do
-					if typeof(wagon) == "table" and wagon.camp == currentCamp then
-						padObject = wagon.pad
-						if padObject then
-							w(("Pad object found for camp %d"):format(currentCamp))
-							w(("  padPosition: %s"):format(tostring(padObject.padPosition)))
-							w(("  hitRadius: %s"):format(tostring(padObject.hitRadius)))
-							w(("  uid: %s"):format(tostring(padObject.uid)))
-							padTargetPos = padObject.padPosition
-						end
-						break
-					end
+	if not dmCmds or typeof(dmCmds.Feature) ~= "function" then
+		w("DiamondMountainCmds not available")
+		return
+	end
+
+	w("DiamondMountainCmds.FEATURES:", dmCmds.FEATURES and table.concat(dmCmds.FEATURES, ",") or "nil")
+	w("")
+
+	local ok, feature = pcall(dmCmds.Feature, "Expedition")
+	if not ok or typeof(feature) ~= "table" then
+		w("Feature('Expedition') failed:", tostring(feature))
+		return
+	end
+
+	expeditionFeature = feature
+	local keys = {}
+	for k in pairs(feature) do keys[#keys + 1] = k end
+	table.sort(keys, function(a, b) return tostring(a) < tostring(b) end)
+	w(("Feature('Expedition') table(%d)"):format(#keys))
+	for _, k in ipairs(keys) do
+		local v = feature[k]
+		if typeof(v) == "function" then
+			dumpFunction("  ." .. tostring(k), v, 2)
+		elseif typeof(v) == "table" then
+			local n = 0
+			for _ in pairs(v) do n += 1 end
+			w(("  .%s = table(%d)"):format(tostring(k), n))
+			local subkeys = {}
+			for sk in pairs(v) do subkeys[#subkeys + 1] = sk end
+			table.sort(subkeys, function(a, b) return tostring(a) < tostring(b) end)
+			local shown = 0
+			for _, sk in ipairs(subkeys) do
+				if shown >= 25 then
+					w("      ...")
+					break
 				end
+				shown += 1
+				w(("      [%s] = %s"):format(tostring(sk), serialize(v[sk])))
 			end
+		else
+			w(("  .%s = %s"):format(tostring(k), serialize(v)))
 		end
 	end
-end
+end)
 
 -- -----------------------------------------------------
--- TEST 1: BUY FROM FAR (current position)
+-- TRIP STATE
 -- -----------------------------------------------------
-sep("TEST 1 — BUY FROM FAR (current position)")
-
-if root and padTargetPos then
-	local dist = (root.Position - padTargetPos).Magnitude
-	w(("Current distance to pad: %.2f studs"):format(dist))
-	w("")
-	w("-- Trying Merchant_RequestPurchase from FAR:")
-	for slot = 0, 6 do
-		local ok, result = invoke("Merchant_RequestPurchase", "DiamondMountainMerchant", slot)
-		w(("  slot=%d ok=%s result=%s"):format(slot, tostring(ok), tostring(result)))
-		task.wait(0.2)
+section("TRIP STATE (Pedestals)", function()
+	if not expedition then
+		w("Expedition not found")
+		return
 	end
-else
-	w("(skip — no pad target)")
-end
-
--- -----------------------------------------------------
--- TEST 2: TELEPORT TO PAD EXACT
--- -----------------------------------------------------
-sep("TEST 2 — TELEPORT TO PAD EXACT")
-
-if root and padTargetPos then
-	local originalAnchored = root.Anchored
-
-	-- Method 1: Teleport to exact padPosition (no Y offset)
-	w("-- Method 1: CFrame.new(padPosition) exact")
-	root.Anchored = true
-	root.CFrame = CFrame.new(padTargetPos)
-	task.wait(0.5)
-	root.Anchored = originalAnchored
-	task.wait(0.3)
-	local dist1 = (root.Position - padTargetPos).Magnitude
-	w(("  Player now: %.2f,%.2f,%.2f | dist=%.2f"):format(
-		root.Position.X, root.Position.Y, root.Position.Z, dist1
-	))
-
-	-- Check IsStandingOn
-	if padObject and typeof(padObject.IsStandingOn) == "function" then
-		local ok, standing = pcall(padObject.IsStandingOn)
-		w(("  IsStandingOn() = %s"):format(tostring(standing)))
-		ok, standing = pcall(function() return padObject:IsStandingOn() end)
-		w(("  padObject:IsStandingOn() = %s"):format(tostring(standing)))
-	end
-
-	-- Method 2: If not standing, teleport to padPart.Position + (0, 3, 0)
-	if padPart then
-		w("")
-		w("-- Method 2: CFrame.new(padPart.Position + (0,3,0))")
-		root.Anchored = true
-		root.CFrame = CFrame.new(padPart.Position + Vector3.new(0, 3, 0))
-		task.wait(0.5)
-		root.Anchored = originalAnchored
-		task.wait(0.3)
-		local dist2 = (root.Position - padTargetPos).Magnitude
-		w(("  Player now: %.2f,%.2f,%.2f | dist=%.2f"):format(
-			root.Position.X, root.Position.Y, root.Position.Z, dist2
-		))
-		if padObject and typeof(padObject.IsStandingOn) == "function" then
-			local ok, standing = pcall(padObject.IsStandingOn)
-			w(("  IsStandingOn() = %s"):format(tostring(standing)))
-		end
-	end
-
-	-- Method 3: PivotTo
-	w("")
-	w("-- Method 3: Character:PivotTo(padPosition)")
-	if localPlayer.Character then
-		pcall(function()
-			localPlayer.Character:PivotTo(CFrame.new(padTargetPos))
-		end)
-		task.wait(0.5)
-		local dist3 = (root.Position - padTargetPos).Magnitude
-		w(("  Player now: %.2f,%.2f,%.2f | dist=%.2f"):format(
-			root.Position.X, root.Position.Y, root.Position.Z, dist3
-		))
-		if padObject and typeof(padObject.IsStandingOn) == "function" then
-			local ok, standing = pcall(padObject.IsStandingOn)
-			w(("  IsStandingOn() = %s"):format(tostring(standing)))
-		end
-	end
-else
-	w("(skip — no pad target)")
-end
-
--- -----------------------------------------------------
--- TEST 3: BUY FROM PAD (after teleport)
--- -----------------------------------------------------
-sep("TEST 3 — BUY FROM PAD (after teleport)")
-
-if root and padTargetPos then
-	local dist = (root.Position - padTargetPos).Magnitude
-	w(("Current distance to pad: %.2f studs"):format(dist))
-	w("")
-	w("-- Trying Merchant_RequestPurchase from PAD:")
-	for slot = 0, 6 do
-		local ok, result = invoke("Merchant_RequestPurchase", "DiamondMountainMerchant", slot)
-		w(("  slot=%d ok=%s result=%s"):format(slot, tostring(ok), tostring(result)))
-		task.wait(0.2)
-	end
-end
-
--- -----------------------------------------------------
--- TEST 4: OPEN SHOP + INSPECT SLOTS
--- -----------------------------------------------------
-sep("TEST 4 — OPEN SHOP + INSPECT SLOTS")
-
-local dmCmds = Modules.DiamondMountainCmds
-local feature = nil
-if dmCmds and typeof(dmCmds.Feature) == "function" then
-	local okF, f = pcall(dmCmds.Feature, "Merchant")
-	if okF and typeof(f) == "table" then
-		feature = f
-	end
-end
-
-if feature and typeof(feature.Open) == "function" then
-	w("-- Calling Feature('Merchant').Open()...")
-	local ok, result = pcall(feature.Open)
-	w(("  Open() ok=%s result=%s"):format(tostring(ok), tostring(result)))
-	task.wait(1)
-end
-
--- Inspect GUI slots
-local playerGui = localPlayer:FindFirstChild("PlayerGui")
-local machines = playerGui and playerGui:FindFirstChild("_MACHINES")
-local merchantGui = machines and machines:FindFirstChild("Merchant")
-
-if merchantGui then
-	w("")
-	w(("Merchant GUI found: %s (Enabled=%s)"):format(
-		merchantGui:GetFullName(), tostring(merchantGui.Enabled)
-	))
-
-	-- Find Slots frame
-	local slots
-	local node = merchantGui
-	for _, name in ipairs({ "Frame", "ItemsFrame", "ScrollingItems", "Slots" }) do
-		node = node and node:FindFirstChild(name)
-	end
-	slots = node
-
-	if slots then
-		w(("Slots frame: %s"):format(slots:GetFullName()))
-		w("")
-		for i = 1, 6 do
-			local slot = slots:FindFirstChild(tostring(i))
-			if slot then
-				w(("Slot %d:"):format(i))
-				local buy = slot:FindFirstChild("Buy")
-				local item = slot:FindFirstChild("ITEM")
-				local cost = slot:FindFirstChild("Cost")
-				local locked = slot:FindFirstChild("Locked") or (item and item:FindFirstChild("Locked"))
-
-				if buy then
-					w(("  Buy: Visible=%s Active=%s"):format(
-						tostring(buy.Visible), tostring(buy.Active)
+	for _, name in ipairs({ "Pedestal1", "Pedestal2", "Pedestal3", "Pedestal4" }) do
+		local ped = expedition:FindFirstChild(name)
+		if ped then
+			w(("%s:"):format(name))
+			for _, d in ipairs(ped:GetDescendants()) do
+				if d:IsA("BasePart") then
+					w(("  %s pos=%.1f,%.1f,%.1f transparency=%.2f"):format(
+						d.Name, d.Position.X, d.Position.Y, d.Position.Z,
+						d.Transparency
 					))
-				else
-					w("  Buy: NIL")
-				end
-				if cost then
-					local amount = cost:FindFirstChild("Amount")
-					w(("  Cost: %s"):format(amount and amount.Text or "?"))
-				end
-				if item then
-					local qty = item:FindFirstChild("Quantity")
-					local pts = item:FindFirstChild("Points")
-					w(("  Quantity: %s | Points: %s"):format(
-						qty and qty.Text or "?", pts and pts.Text or "?"
+				elseif d:IsA("ProximityPrompt") then
+					w(("  %s [PROMPT] enabled=%s actionText=%q"):format(
+						d.Name, tostring(d.Enabled), tostring(d.ActionText)
 					))
-					w("  Item attributes:")
-					for k, v in pairs(item:GetAttributes()) do
-						w(("    %s = %s"):format(tostring(k), tostring(v)))
-					end
-				end
-				if locked then
-					w(("  Locked.Visible = %s"):format(tostring(locked.Visible)))
-				end
-
-				-- Try clicking Buy
-				if buy and buy.Visible then
-					local clicked = false
-					for _, signal in ipairs({ buy.Activated, buy.MouseButton1Click }) do
-						local okC, conns = pcall(getconnections, signal)
-						if okC and conns then
-							for _, conn in ipairs(conns) do
-								if conn.Function then
-									pcall(conn.Function)
-									clicked = true
-								end
-							end
-						end
-					end
-					w(("  Clicked Buy: %s"):format(tostring(clicked)))
-					task.wait(0.3)
+				elseif d:IsA("ClickDetector") then
+					w(("  %s [CLICK]"):format(d.Name))
+				elseif d:IsA("BillboardGui") or d:IsA("SurfaceGui") then
+					w(("  %s [GUI] enabled=%s"):format(d.Name, tostring(d.Enabled)))
 				end
 			end
+			w(("  Attributes:"))
+			local n = 0
+			for k, v in pairs(ped:GetAttributes()) do
+				n += 1
+				w(("    %s = %s"):format(tostring(k), serialize(v)))
+			end
+			if n == 0 then w("    (none)") end
 		end
-	else
-		w("Slots frame NOT FOUND")
 	end
-else
-	w("Merchant GUI NOT FOUND")
-end
+end)
 
 -- -----------------------------------------------------
--- TEST 5: TRY REMOTE AFTER CLICK
+-- TEST 1: FEATURE METHODS (no args)
 -- -----------------------------------------------------
-sep("TEST 5 — TRY REMOTE AFTER CLICK")
-
-w("-- Trying Merchant_RequestPurchase after click:")
-for slot = 0, 6 do
-	local ok, result = invoke("Merchant_RequestPurchase", "DiamondMountainMerchant", slot)
-	w(("  slot=%d ok=%s result=%s"):format(slot, tostring(ok), tostring(result)))
-	task.wait(0.2)
-end
-
-w("")
-w("-- Trying with amount arg:")
-for slot = 1, 6 do
-	local ok, result = invoke("Merchant_RequestPurchase", "DiamondMountainMerchant", slot, 1)
-	w(("  slot=%d amount=1 ok=%s result=%s"):format(slot, tostring(ok), tostring(result)))
-	task.wait(0.2)
-end
-
--- -----------------------------------------------------
--- TEST 6: MACHINESCREENS + MACHINECMDS
--- -----------------------------------------------------
-sep("TEST 6 — MACHINESCREENS + MACHINECMDS")
-
-local machineScreens = Modules.MachineScreens
-if machineScreens then
-	w("MachineScreens module: table")
-	if typeof(machineScreens.Get) == "function" then
-		w("-- MachineScreens.Get('DiamondMountainMerchant')")
-		local ok, result = pcall(machineScreens.Get, "DiamondMountainMerchant")
-		w(("  ok=%s result=%s"):format(tostring(ok), tostring(result)))
+section("TEST 1 — FEATURE METHODS (no args)", function()
+	if not expeditionFeature then
+		w("No feature")
+		return
 	end
-	if typeof(machineScreens.Has) == "function" then
-		local ok, result = pcall(machineScreens.Has, "DiamondMountainMerchant")
-		w(("MachineScreens.Has: ok=%s result=%s"):format(tostring(ok), tostring(result)))
-	end
-	if typeof(machineScreens.IsHere) == "function" then
-		local ok, result = pcall(machineScreens.IsHere, "DiamondMountainMerchant")
-		w(("MachineScreens.IsHere: ok=%s result=%s"):format(tostring(ok), tostring(result)))
-	end
-end
-
-local machineCmds = Modules.MachineCmds
-if machineCmds then
-	w("")
-	w("MachineCmds module: table")
-	if typeof(machineCmds.MarkApproached) == "function" then
-		local ok, result = pcall(machineCmds.MarkApproached, "DiamondMountainMerchant")
-		w(("MachineCmds.MarkApproached: ok=%s result=%s"):format(tostring(ok), tostring(result)))
-	end
-	if typeof(machineCmds.IsStandingOn) == "function" then
-		local ok, result = pcall(machineCmds.IsStandingOn, "DiamondMountainMerchant")
-		w(("MachineCmds.IsStandingOn: ok=%s result=%s"):format(tostring(ok), tostring(result)))
-	end
-	if typeof(machineCmds.CanUse) == "function" then
-		local ok, result = pcall(machineCmds.CanUse, "DiamondMountainMerchant")
-		w(("MachineCmds.CanUse: ok=%s result=%s"):format(tostring(ok), tostring(result)))
-	end
-end
-
--- -----------------------------------------------------
--- TEST 7: DIRECTORY.MERCHANTS.GetOffers
--- -----------------------------------------------------
-sep("TEST 7 — DIRECTORY.MERCHANTS.GetOffers")
-
-local merchDir = Modules.MerchantsDir
-if merchDir and merchDir.DiamondMountainMerchant then
-	local dmDir = merchDir.DiamondMountainMerchant
-	w("Directory.Merchants.DiamondMountainMerchant: table")
-	if typeof(dmDir.GetOffers) == "function" then
-		w("-- Trying GetOffers with different args:")
-		local args = {
-			{ "no-arg", {} },
-			{ "camp", { currentCamp or 1 } },
-			{ "camp-string", { tostring(currentCamp or 1) } },
-			{ "camp,visit", { currentCamp or 1, 1 } },
-		}
-		for _, combo in ipairs(args) do
-			local ok, result = pcall(dmDir.GetOffers, table.unpack(combo[2]))
-			w(("  [%s] ok=%s result=%s"):format(combo[1], tostring(ok), tostring(result)))
-			if ok and typeof(result) == "table" then
-				for k, v in pairs(result) do
-					w(("    [%s] = %s"):format(tostring(k), typeof(v)))
-				end
-			end
+	local methods = {
+		"Claim", "ClaimAll", "ClaimRewards", "Collect", "CollectAll",
+		"ClaimExpedition", "ClaimTrip", "ClaimTrips", "ClaimAllTrips",
+		"GetTrips", "GetExpeditions", "GetState", "GetStatus", "GetData",
+		"GetClaimable", "HasClaimable", "CanClaim", "IsClaimable",
+		"Open", "Close",
+	}
+	for _, name in ipairs(methods) do
+		if typeof(expeditionFeature[name]) == "function" then
+			local ok, result = pcall(expeditionFeature[name])
+			w(("[%s] ok=%s result=%s"):format(name, tostring(ok), serialize(result)))
 			task.wait(0.2)
 		end
 	end
-end
+end)
 
 -- -----------------------------------------------------
--- TEST 8: FEATURE.DEBUG
+-- TEST 2: FEATURE METHODS (with args)
 -- -----------------------------------------------------
-sep("TEST 8 — FEATURE.DEBUG")
-if feature and typeof(feature.Debug) == "function" then
-	local ok, result = pcall(feature.Debug)
-	w(("Feature('Merchant').Debug(): ok=%s"):format(tostring(ok)))
-	w(("  result: %s"):format(tostring(result)))
-end
+section("TEST 2 — FEATURE METHODS (with args)", function()
+	if not expeditionFeature then
+		w("No feature")
+		return
+	end
+	local args = { 1, 0, true, "1" }
+	for _, name in ipairs({ "Claim", "ClaimTrip", "GetTrip", "GetExpedition" }) do
+		if typeof(expeditionFeature[name]) == "function" then
+			for _, arg in ipairs(args) do
+				local ok, result = pcall(expeditionFeature[name], arg)
+				w(("[%s(%s)] ok=%s result=%s"):format(
+					name, serialize(arg), tostring(ok), serialize(result)
+				))
+				task.wait(0.15)
+			end
+		end
+	end
+end)
+
+-- -----------------------------------------------------
+-- TEST 3: REMOTES
+-- -----------------------------------------------------
+section("TEST 3 — REMOTE NAMES", function()
+	if not networkFolder then
+		w("Network folder not found")
+		return
+	end
+	local candidates = {
+		"Expedition_Claim", "Expedition_ClaimAll", "Expedition_Collect",
+		"Expedition_Get", "Expedition_Request", "Expedition_Start",
+		"DM_Expedition_Claim", "DM_Expedition_Get",
+		"ClaimExpedition", "ClaimTrip", "ClaimExpeditions",
+		"DiamondMountain_ExpeditionClaim",
+		"EventUpgrades: Purchase",
+		"Instancing_InvokeCustomFromClient",
+		"Instancing_FireCustomFromClient",
+	}
+
+	w("-- Checking which remotes exist:")
+	for _, name in ipairs(candidates) do
+		local remote = networkFolder:FindFirstChild(name)
+		w(("  %s -> %s"):format(name, remote and remote.ClassName or "NOT FOUND"))
+	end
+
+	w("")
+	w("-- Searching Network folder for 'expedition'/'trip'/'dm_':")
+	for _, child in ipairs(networkFolder:GetChildren()) do
+		local lower = child.Name:lower()
+		if lower:find("expedition") or lower:find("trip") or lower:find("dm_") then
+			w(("  %s (%s)"):format(child.Name, child.ClassName))
+		end
+	end
+end)
+
+-- -----------------------------------------------------
+-- TEST 4: INVOKE CUSTOM
+-- -----------------------------------------------------
+section("TEST 4 — INSTANCE.INVOKECUSTOM", function()
+	local dmCmds = Modules.DiamondMountainCmds
+	if not dmCmds or typeof(dmCmds.Instance) ~= "function" then
+		w("Instance not available")
+		return
+	end
+	local okI, inst = pcall(dmCmds.Instance)
+	if not okI or typeof(inst) ~= "table" or typeof(inst.InvokeCustom) ~= "function" then
+		w("InvokeCustom not available")
+		return
+	end
+
+	local keys = {
+		"ExpeditionClaim", "Expedition:Claim", "ClaimExpedition",
+		"Expedition_Claim", "ClaimTrip", "TripClaim",
+		"Expedition", "Claim",
+	}
+	for _, key in ipairs(keys) do
+		local ok, result = pcall(inst.InvokeCustom, key)
+		w(("[InvokeCustom(%q)] ok=%s result=%s"):format(
+			key, tostring(ok), serialize(result)
+		))
+		task.wait(0.2)
+	end
+end)
+
+-- -----------------------------------------------------
+-- TEST 5: MACHINESCREENS
+-- -----------------------------------------------------
+section("TEST 5 — MACHINESCREENS", function()
+	local machineScreens = Modules.MachineScreens
+	if not machineScreens then
+		w("MachineScreens not available")
+		return
+	end
+	local ids = {
+		"DiamondMountainExpeditionMachine", "ExpeditionMachine",
+		"Expedition", "DM_Expedition", "ExpeditionMachine_1",
+	}
+	for _, id in ipairs(ids) do
+		if typeof(machineScreens.Get) == "function" then
+			local ok, result = pcall(machineScreens.Get, id)
+			w(("[Get(%q)] ok=%s result=%s"):format(id, tostring(ok), serialize(result)))
+		end
+		if typeof(machineScreens.Has) == "function" then
+			local ok, result = pcall(machineScreens.Has, id)
+			w(("[Has(%q)] ok=%s result=%s"):format(id, tostring(ok), serialize(result)))
+		end
+		if typeof(machineScreens.IsHere) == "function" then
+			local ok, result = pcall(machineScreens.IsHere, id)
+			w(("[IsHere(%q)] ok=%s result=%s"):format(id, tostring(ok), serialize(result)))
+		end
+		task.wait(0.1)
+	end
+end)
+
+-- -----------------------------------------------------
+-- TEST 6: MACHINECMDS
+-- -----------------------------------------------------
+section("TEST 6 — MACHINECMDS", function()
+	local machineCmds = Modules.MachineCmds
+	if not machineCmds then
+		w("MachineCmds not available")
+		return
+	end
+	local ids = { "DiamondMountainExpeditionMachine", "ExpeditionMachine", "Expedition" }
+	for _, id in ipairs(ids) do
+		for _, method in ipairs({ "IsStandingOn", "CanUse", "AllowOpen", "IsAllowedToOpen", "GetUI", "GetModels" }) do
+			if typeof(machineCmds[method]) == "function" then
+				local ok, result = pcall(machineCmds[method], id)
+				w(("[%s(%q)] ok=%s result=%s"):format(
+					method, id, tostring(ok), serialize(result)
+				))
+			end
+		end
+		task.wait(0.1)
+	end
+end)
+
+-- -----------------------------------------------------
+-- TEST 7: UI SCAN
+-- -----------------------------------------------------
+section("TEST 7 — UI SCAN (_MACHINES)", function()
+	local playerGui = localPlayer:FindFirstChild("PlayerGui")
+	local machines = playerGui and playerGui:FindFirstChild("_MACHINES")
+	if not machines then
+		w("_MACHINES not found")
+		return
+	end
+	w("-- _MACHINES children:")
+	for _, child in ipairs(machines:GetChildren()) do
+		w(("  %s (%s) enabled=%s"):format(
+			child.Name, child.ClassName,
+			child:IsA("ScreenGui") and tostring(child.Enabled) or "n/a"
+		))
+		if child.Name:lower():find("expedition") or child.Name:lower():find("trip") then
+			w("    [EXPEDITION UI FOUND]")
+			for _, d in ipairs(child:GetDescendants()) do
+				if d:IsA("TextButton") or d:IsA("ImageButton") then
+					w(("      %s (%s) Visible=%s Active=%s Text=%q"):format(
+						d.Name, d.ClassName, tostring(d.Visible), tostring(d.Active),
+						d:IsA("TextButton") and d.Text or ""
+					))
+				elseif d:IsA("Frame") and (d.Name:lower():find("claim") or d.Name:lower():find("trip")) then
+					w(("      %s (Frame)"):format(d.Name))
+				end
+			end
+		end
+	end
+end)
+
+-- -----------------------------------------------------
+-- TEST 8: OPEN EXPEDITION UI + FIRE
+-- -----------------------------------------------------
+section("TEST 8 — OPEN EXPEDITION + FIRE", function()
+	local root = getRoot()
+	if not root or not expedition then
+		w("No root or expedition")
+		return
+	end
+
+	local expeditionPos = nil
+	local okP, pivot = pcall(function() return expedition:GetPivot() end)
+	if okP and pivot then
+		expeditionPos = pivot.Position
+	end
+
+	if not expeditionPos then
+		w("No expedition position")
+		return
+	end
+
+	local originalCFrame = root.CFrame
+	local wasAnchored = root.Anchored
+	root.Anchored = true
+	root.CFrame = CFrame.new(expeditionPos + Vector3.new(0, 5, 0))
+	task.wait(0.5)
+	root.Anchored = wasAnchored
+	w(("Teleported to Expedition: %.1f,%.1f,%.1f"):format(
+		root.Position.X, root.Position.Y, root.Position.Z
+	))
+
+	if expeditionFeature and typeof(expeditionFeature.Open) == "function" then
+		pcall(expeditionFeature.Open)
+		task.wait(0.5)
+		w("Called feature.Open()")
+	end
+
+	pcall(fire, "MachineScreens_Get", "DiamondMountainExpeditionMachine")
+	task.wait(0.5)
+
+	local playerGui = localPlayer:FindFirstChild("PlayerGui")
+	local machines = playerGui and playerGui:FindFirstChild("_MACHINES")
+	if machines then
+		w("")
+		w("-- _MACHINES after open (enabled only):")
+		for _, child in ipairs(machines:GetChildren()) do
+			if child:IsA("ScreenGui") and child.Enabled then
+				w(("  %s (Enabled)"):format(child.Name))
+				for _, d in ipairs(child:GetDescendants()) do
+					if d:IsA("TextButton") or d:IsA("ImageButton") then
+						w(("    %s (%s) Visible=%s Text=%q"):format(
+							d.Name, d.ClassName, tostring(d.Visible),
+							d:IsA("TextButton") and d.Text or ""
+						))
+					end
+				end
+			end
+		end
+	end
+
+	w("")
+	w("-- Fire all interactions in Expedition:")
+	local fired = 0
+	for _, d in ipairs(expedition:GetDescendants()) do
+		if d:IsA("ProximityPrompt") then
+			if not d.Enabled then pcall(function() d.Enabled = true end) end
+			pcall(fireproximityprompt, d)
+			w(("  Prompt: %s"):format(d:GetFullName()))
+			fired += 1
+		elseif d:IsA("ClickDetector") then
+			pcall(fireclickdetector, d)
+			w(("  Click: %s"):format(d:GetFullName()))
+			fired += 1
+		end
+	end
+	w(("Fired %d interactions"):format(fired))
+
+	w("")
+	w("-- Feature methods after UI open:")
+	if expeditionFeature then
+		for _, name in ipairs({ "Claim", "ClaimAll", "ClaimRewards", "Collect" }) do
+			if typeof(expeditionFeature[name]) == "function" then
+				local ok, result = pcall(expeditionFeature[name])
+				w(("  [%s] ok=%s result=%s"):format(name, tostring(ok), serialize(result)))
+			end
+		end
+	end
+
+	root.Anchored = true
+	root.CFrame = originalCFrame
+	task.wait(0.3)
+	root.Anchored = wasAnchored
+	w("Returned to original position")
+end)
 
 -- -----------------------------------------------------
 -- SUMMARY
 -- -----------------------------------------------------
-sep("SUMMARY")
-w("File:", DIAG_PATH)
-w("Lines:", #lines)
-w("Current camp:", tostring(currentCamp))
-w("Pad target pos:", tostring(padTargetPos))
-if root then
-	w(("Final player pos: %.2f,%.2f,%.2f"):format(
-		root.Position.X, root.Position.Y, root.Position.Z
-	))
-end
+section("SUMMARY", function()
+	w("File:", DIAG_PATH)
+	w("Lines:", #lines)
+	w("Expedition:", expedition and "found" or "nil")
+	w("Feature('Expedition'):", expeditionFeature and "found" or "nil")
+	w("")
+	w("=== END ===")
+end)
 
-flush()
+-- Final flush
+local ok = flush()
+if ok then
+	print("")
+	print("========================================")
+	print("DIAGNOSTIC COMPLETE")
+	print("File saved: " .. DIAG_PATH)
+	print("Mở file này trong folder executor và gửi cho tôi")
+	print("========================================")
+else
+	print("")
+	print("========================================")
+	print("writefile FAILED — content đã copy vào clipboard")
+	print("Paste vào đâu đó và gửi cho tôi")
+	print("========================================")
+end
