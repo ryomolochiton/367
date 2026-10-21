@@ -393,7 +393,7 @@ local QUEST_PRIORITY = {
     BEST_LUCKYBLOCK = 2,
     BEST_PINATA = 2,
     BEST_EGG = 3,
-    CURRENT_BREAKABLE = 4,
+    CURRENT_BREAKABLE = 3,
     BEST_SUPERIOR_MINI_CHEST = 4,
     DIAMOND_BREAKABLE = 4,
     BEST_MINI_CHEST = 4,
@@ -420,13 +420,37 @@ function GetIDByQuest(name)
     return nil
 end
 
+-- So sanh khoa cua bang Goals: so truoc (theo gia tri), chuoi sau (theo chu cai)
+local function CompareGoalKeys(a, b)
+    local na, nb = tonumber(a), tonumber(b)
+    if na and nb then
+        return na < nb
+    end
+    if na then
+        return true
+    end
+    if nb then
+        return false
+    end
+    return tostring(a) < tostring(b)
+end
+
 local activeQuests = {}
 function GetActiveQuests()
     table.clear(activeQuests)
 
-    for _, goal in pairs(Save.Get().Goals) do
+    local goals = Save.Get().Goals
+    local keys = {}
+    for key in pairs(goals) do
+        table.insert(keys, key)
+    end
+    table.sort(keys, CompareGoalKeys)
+
+    for slot, key in ipairs(keys) do
+        local goal = goals[key]
         local questName = GetQuestByID(goal.Type)
         table.insert(activeQuests, {
+            slot = slot, -- vi tri quest trong danh sach Goals (dung de tim Frame tren UI)
             questname = questName,
             priority = QUEST_PRIORITY[questName] or 4,
             amount = goal.Amount,
@@ -692,24 +716,114 @@ function MakeQuest(questName, args)
     end
 end
 
--- To mau tieu de quest dang lam trong UI (chi la hieu ung hien thi)
--- LUU Y: bang anh xa [so sao] -> ten Frame bi mat khi decompile.
--- Dien vao day neu muon highlight hoat dong; de trong thi tat ca tieu de se mau trang.
+------------------------------------------------------------------------
+-- To mau tieu de quest dang lam trong UI (hieu ung hien thi)
+------------------------------------------------------------------------
+local QUEST_HIGHLIGHT_COLOR = Color3.fromRGB(0, 170, 255) -- quest dang lam
+local QUEST_DEFAULT_COLOR = Color3.fromRGB(255, 255, 255) -- cac quest con lai
+
+-- (Tuy chon) [so sao] -> ten Frame, neu ban biet chinh xac (cach lam cua script goc,
+-- bang nay bi mat khi decompile). De trong = tu dong xac dinh theo vi tri.
 local QUEST_FRAME_NAME = {}
 
-local function HighlightQuest(stars)
-    pcall(function()
-        local holder = LocalPlayer.PlayerGui.GoalsSide.Frame.Quests.QuestsGradient.QuestsHolder
-        for _, frame in pairs(holder:GetChildren()) do
-            if frame:IsA("Frame") then
-                if frame.Name == QUEST_FRAME_NAME[stars] then
-                    frame.Title.TextColor3 = Color3.fromRGB(0, 170, 255)
-                else
-                    frame.Title.TextColor3 = Color3.fromRGB(255, 255, 255)
-                end
+local function GetQuestHolder()
+    local gui = LocalPlayer:FindFirstChild("PlayerGui")
+    local goalsSide = gui and gui:FindFirstChild("GoalsSide")
+    local frame = goalsSide and goalsSide:FindFirstChild("Frame")
+    local quests = frame and frame:FindFirstChild("Quests")
+    local gradient = quests and quests:FindFirstChild("QuestsGradient")
+    return gradient and gradient:FindFirstChild("QuestsHolder")
+end
+
+-- Cac Frame quest dang hien, sap theo thu tu hien thi (LayoutOrder, roi toa do Y)
+local function GetQuestFrames()
+    local frames = {}
+    local holder = GetQuestHolder()
+    if not holder then
+        return frames
+    end
+
+    for _, child in pairs(holder:GetChildren()) do
+        if child:IsA("Frame") and child.Visible and child:FindFirstChild("Title") then
+            table.insert(frames, child)
+        end
+    end
+
+    table.sort(frames, function(a, b)
+        if a.LayoutOrder ~= b.LayoutOrder then
+            return a.LayoutOrder < b.LayoutOrder
+        end
+        return a.AbsolutePosition.Y < b.AbsolutePosition.Y
+    end)
+    return frames
+end
+
+-- Tim Frame cua quest dang lam:
+--   1) neu QUEST_FRAME_NAME co khai bao -> dung ten Frame theo so sao (cach goc)
+--   2) neu khong -> quest thu N trong Goals = Frame thu N tren UI
+--      (chi dung khi so Frame == so Goals, de khong to nham dong)
+local function FindQuestFrame(quest, goalCount, frames)
+    local frameName = QUEST_FRAME_NAME[quest.queststars]
+    if frameName then
+        for _, frame in ipairs(frames) do
+            if frame.Name == frameName then
+                return frame
             end
         end
+        return nil
+    end
+
+    if quest.slot and goalCount == #frames then
+        return frames[quest.slot]
+    end
+    return nil
+end
+
+local highlightWarned = false
+
+local function HighlightQuest(quest, goalCount)
+    pcall(function()
+        local frames = GetQuestFrames()
+        if #frames == 0 then
+            return
+        end
+
+        local target = FindQuestFrame(quest, goalCount, frames)
+        if not target and not highlightWarned then
+            highlightWarned = true
+            dprint(
+                "HighlightQuest: khong xac dinh duoc Frame (so Frame = " .. #frames
+                    .. ", so Goals = " .. tostring(goalCount)
+                    .. "). Chay DumpQuestFrames() de xem ten Frame."
+            )
+        end
+
+        for _, frame in ipairs(frames) do
+            frame.Title.TextColor3 = (frame == target) and QUEST_HIGHLIGHT_COLOR or QUEST_DEFAULT_COLOR
+        end
     end)
+end
+
+-- Cong cu tro giup: in thong tin cac Frame trong QuestsHolder de dien QUEST_FRAME_NAME
+function DumpQuestFrames()
+    local holder = GetQuestHolder()
+    if not holder then
+        print("Khong tim thay QuestsHolder")
+        return
+    end
+
+    for _, child in pairs(holder:GetChildren()) do
+        if child:IsA("GuiObject") then
+            local title = child:FindFirstChild("Title")
+            print(
+                child.ClassName,
+                child.Name,
+                "LayoutOrder=" .. tostring(child.LayoutOrder),
+                "Visible=" .. tostring(child.Visible),
+                title and title.Text or ""
+            )
+        end
+    end
 end
 
 ------------------------------------------------------------------------
@@ -750,7 +864,7 @@ local function RunFirstDoableQuest(quests, isZoneGate)
 
         if canDo then
             if not isZoneGate then
-                HighlightQuest(quest.queststars)
+                HighlightQuest(quest, #quests)
             end
             MakeQuest(quest.questname, {
                 amount = quest.amount,
