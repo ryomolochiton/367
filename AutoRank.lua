@@ -15,11 +15,14 @@ local QUEST_PRIORITY = {
 	CURRENCY = 5,
 }
 local WORLD_CURRENCY = { [1] = "Coins", [2] = "TechCoins", [3] = "VoidCoins", [4] = "FantasyCoins" }
+local STATUS_COLOR = Color3.fromRGB(0, 170, 255)
+local STATUS_REFRESH = 0.5
 
 -- Services.
 local playersService = game:GetService("Players")
 local replicatedStorage = game:GetService("ReplicatedStorage")
 local workspaceService = game:GetService("Workspace")
+local runService = game:GetService("RunService")
 local localPlayer = playersService.LocalPlayer
 
 -- Modules.
@@ -44,6 +47,52 @@ local calcEnchantsPerTier = require(library.Balancing.CalcEnchantsPerTierRequire
 local questState = {}
 local activeQuests = {}
 local zoneGateQuests = {}
+local currentQuest = nil
+local currentAction = nil
+local questStartedAt = 0
+local questHistory = {}
+
+-- Status.
+local function setCurrentQuest(quest)
+	if not quest then
+		return
+	end
+
+	currentQuest = {
+		name = quest.questname,
+		id = quest.id,
+		needed = quest.neededamount,
+		amount = quest.amount,
+		progress = quest.progress,
+		stars = quest.queststars,
+		potiontier = quest.potiontier,
+	}
+	currentAction = nil
+	questStartedAt = os.clock()
+	table.insert(questHistory, currentQuest)
+
+	print(string.format("[AutoRank] Đang làm quest: %s | còn thiếu %s/%s",
+		tostring(currentQuest.name), tostring(currentQuest.needed), tostring(currentQuest.amount)))
+end
+
+local function setCurrentAction(label)
+	currentAction = label
+	print(string.format("[AutoRank]   -> %s (quest: %s)", tostring(label), tostring(currentQuest and currentQuest.name)))
+end
+
+local function clearCurrentQuest()
+	currentQuest = nil
+	currentAction = nil
+end
+
+local function describeStatus()
+	if not currentQuest then
+		return "idle"
+	end
+
+	local elapsed = os.clock() - questStartedAt
+	return string.format("%s | %s | %.1fs", tostring(currentQuest.name), tostring(currentAction or "chuẩn bị"), elapsed)
+end
 
 -- Helpers.
 local function refreshInventory()
@@ -55,35 +104,142 @@ local function getHrp()
 	return character and character:FindFirstChild("HumanoidRootPart")
 end
 
-local function teleportToArea(area)
-	if not area then
-		return
+local function getMaximumZoneInfo()
+	local zone = zoneCmds.GetMaximumZone()
+	return { ID = zone._id, Number = zone.ZoneNumber, Folder = zone.ZoneFolder, World = zone.WorldNumber }
+end
+
+local function getBestZoneNumber()
+	return zoneCmds.GetMaximumZone().ZoneNumber
+end
+
+local function getNextZone()
+	local targetNumber = getBestZoneNumber() + 1
+	for _, zone in pairs(zonesDirectory) do
+		if zone.ZoneNumber == targetNumber then
+			return zone
+		end
 	end
+	return nil
+end
+
+-- Area resolution: cache per zone id, fall back to a workspace tree scan.
+local areaCache = {}
+
+local function findAreaByZone(zoneFolder)
+	local zoneId = zoneFolder
+	if typeof(zoneFolder) == "Instance" then
+		zoneId = zoneFolder.Name
+	end
+
+	if not zoneId then
+		return nil
+	end
+
+	local cacheKey = tostring(zoneId)
+	if areaCache[cacheKey] and areaCache[cacheKey].Parent then
+		return areaCache[cacheKey]
+	end
+
+	local things = workspaceService:FindFirstChild("__THINGS")
+	local containers = {}
+	if things then
+		for _, folderName in ipairs({ "Zones", "Areas", "ZoneAreas", "Quests", "Areas_" }) do
+			local folder = things:FindFirstChild(folderName)
+			if folder then
+				table.insert(containers, folder)
+			end
+		end
+	end
+
+	for _, rootName in ipairs({ "Zones", "Areas", "ZoneAreas" }) do
+		local root = workspaceService:FindFirstChild(rootName)
+		if root then
+			table.insert(containers, root)
+		end
+	end
+
+	for _, container in ipairs(containers) do
+		for _, instance in ipairs(container:GetDescendants()) do
+			if instance.Name == cacheKey then
+				areaCache[cacheKey] = instance
+				return instance
+			end
+		end
+	end
+
+	return nil
+end
+
+local function getAreaFromZone(zoneInfo)
+	local zoneFolder = zoneInfo.Folder or zoneInfo.ZoneFolder
+
+	if typeof(zoneFolder) == "Instance" then
+		-- ZoneFolder can be the area itself or its parent holder.
+		if zoneFolder:FindFirstChild("PERSISTENT") or zoneFolder:FindFirstChild("INTERACT") then
+			return zoneFolder
+		end
+		local nested = zoneFolder:FindFirstChild(tostring(zoneInfo.ID))
+		if nested then
+			return nested
+		end
+	end
+
+	return findAreaByZone(zoneFolder) or findAreaByZone(zoneInfo.ID)
+end
+
+local function teleportToArea(zoneInfo)
+	if typeof(zoneInfo) == "table" then
+		local zone = zoneCmds.GetMaximumZone()
+		zoneInfo = getAreaFromZone({ ID = zoneInfo.ID or zoneInfo._id, Folder = zoneInfo.Folder })
+	elseif typeof(zoneInfo) == "string" or typeof(zoneInfo) == "number" then
+		zoneInfo = findAreaByZone(zoneInfo)
+	end
+
+	local area = zoneInfo
+	if not area then
+		setCurrentAction and setCurrentAction("không tìm thấy area của zone")
+		return false
+	end
+
 	local hrp = getHrp()
 	if not hrp then
-		return
+		return false
 	end
 
 	local interact = area:FindFirstChild("INTERACT")
-	local target = interact and interact:FindFirstChild("BREAKABLE_SPAWNS")
-	target = target and target:FindFirstChild("Main")
-
-	if target and (hrp.Position - target.Position).Magnitude <= 30 then
-		return
-	end
+	local spawns = interact and interact:FindFirstChild("BREAKABLE_SPAWNS")
+	local target = spawns and spawns:FindFirstChild("Main")
 
 	local persistent = area:FindFirstChild("PERSISTENT")
 	local teleportPart = persistent and persistent:FindFirstChild("Teleport")
+
+	if not teleportPart and not target then
+		setCurrentAction and setCurrentAction("area thiếu PERSISTENT.Teleport / BREAKABLE_SPAWNS")
+		return false
+	end
+
+	if target and (hrp.Position - target.Position).Magnitude <= 30 then
+		return true
+	end
+
+	local character = localPlayer.Character
 	if teleportPart then
 		hrp.CFrame = teleportPart.CFrame
+		local deadline = os.clock() + 4
 		repeat
 			task.wait()
-		until localPlayer.Character and localPlayer.Character.Humanoid.FloorMaterial ~= Enum.Material.Air
+			character = localPlayer.Character
+		until not character or character.Humanoid.FloorMaterial ~= Enum.Material.Air or os.clock() > deadline
 	end
 
 	if target then
 		hrp.CFrame = target.CFrame
+	elseif teleportPart then
+		hrp.CFrame = teleportPart.CFrame
 	end
+
+	return true
 end
 
 local function getBestEggNumber()
@@ -173,25 +329,6 @@ local function getPetsByRarity(rarity)
 	return result
 end
 
-local function getMaximumZoneInfo()
-	local zone = zoneCmds.GetMaximumZone()
-	return { ID = zone._id, Number = zone.ZoneNumber, Folder = zone.ZoneFolder, World = zone.WorldNumber }
-end
-
-local function getBestZoneNumber()
-	return zoneCmds.GetMaximumZone().ZoneNumber
-end
-
-local function getNextZone()
-	local targetNumber = getBestZoneNumber() + 1
-	for _, zone in pairs(zonesDirectory) do
-		if zone.ZoneNumber == targetNumber then
-			return zone
-		end
-	end
-	return nil
-end
-
 local function getCurrentZoneQuests()
 	return saveModule.Get().ZoneGateQuest
 end
@@ -215,33 +352,56 @@ local function usePotion(tier, amount)
 end
 
 local function isCombinablePotion(potion)
-	return potion.tn > 1 and potion.tn <= 4 and potion.id ~= "Walkspeed" and potion.tn ~= 3
+	if potion.tn > 4 then
+		return true
+	end
+	return potion.tn > 1 and potion.id ~= "Walkspeed" and potion.tn ~= 3
 end
 
 local function isCombinableEnchant(enchant)
-	if not (enchant.tn > 1 and enchant.tn <= 4) then
+	if enchant.tn <= 1 then
 		return false
 	end
-	return not table.find(ENCHANT_BLACKLIST, enchant.id .. " " .. enchant.tn)
+	if table.find(ENCHANT_BLACKLIST, enchant.id .. " " .. enchant.tn) then
+		return false
+	end
+	return true
 end
+
+-- After each machine upgrade the save layout may change, so refresh + re-scan.
+local MAX_COMBINE_PASSES = 25
 
 local function combinePotions(multiplier)
 	if multiplier <= 0 then
 		return
 	end
 
-	for uid, potion in pairs(questState.Potion or {}) do
-		if isCombinablePotion(potion) then
-			setthreadidentity(4)
-			local required = calcPotionsPerTier(potion.tn) * multiplier
-			if required < (potion._am or 1) then
-				print("Combining potion:", potion.id, potion.tn, required)
-				networkModule.Invoke("UpgradePotionsMachine_Activate", uid, multiplier)
-			else
-				break
+	local combined = 0
+	for _ = 1, MAX_COMBINE_PASSES do
+		refreshInventory()
+		local didCombine = false
+
+		for uid, potion in pairs(questState.Potion or {}) do
+			if isCombinablePotion(potion) then
+				setthreadidentity(4)
+				local ok, base = pcall(calcPotionsPerTier, potion.tn)
+				local required = ok and (base * multiplier) or (2 ^ potion.tn * multiplier)
+				if required < (potion._am or 1) then
+					print("Combining potion:", potion.id, potion.tn, required)
+					networkModule.Invoke("UpgradePotionsMachine_Activate", uid, multiplier)
+					combined = combined + 1
+					didCombine = true
+					task.wait(0.05)
+				end
 			end
 		end
+
+		if not didCombine then
+			break
+		end
 	end
+
+	setCurrentAction("combine potions x" .. tostring(combined))
 end
 
 local function combineEnchants(multiplier)
@@ -249,18 +409,32 @@ local function combineEnchants(multiplier)
 		return
 	end
 
-	for uid, enchant in pairs(questState.Enchant or {}) do
-		if isCombinableEnchant(enchant) then
-			setthreadidentity(4)
-			local required = calcEnchantsPerTier(enchant.tn) * multiplier
-			if required < (enchant._am or 1) then
-				print("Combining enchant:", enchant.id, enchant.tn, required)
-				networkModule.Invoke("UpgradeEnchantsMachine_Activate", uid, multiplier)
-			else
-				break
+	local combined = 0
+	for _ = 1, MAX_COMBINE_PASSES do
+		refreshInventory()
+		local didCombine = false
+
+		for uid, enchant in pairs(questState.Enchant or {}) do
+			if isCombinableEnchant(enchant) then
+				setthreadidentity(4)
+				local ok, base = pcall(calcEnchantsPerTier, enchant.tn)
+				local required = ok and (base * multiplier) or (2 ^ enchant.tn * multiplier)
+				if required < (enchant._am or 1) then
+					print("Combining enchant:", enchant.id, enchant.tn, required)
+					networkModule.Invoke("UpgradeEnchantsMachine_Activate", uid, multiplier)
+					combined = combined + 1
+					didCombine = true
+					task.wait(0.05)
+				end
 			end
 		end
+
+		if not didCombine then
+			break
+		end
 	end
+
+	setCurrentAction("combine enchants x" .. tostring(combined))
 end
 
 local function findClosestCustomEgg()
@@ -269,7 +443,12 @@ local function findClosestCustomEgg()
 		return nil, nil
 	end
 
-	local customEggs = workspaceService.__THINGS.CustomEggs
+	local things = workspaceService.__THINGS
+	local customEggs = things and things.CustomEggs
+	if not customEggs then
+		return nil, nil
+	end
+
 	local bestEgg, bestDist = nil, math.huge
 	for _, egg in ipairs(customEggs:GetChildren()) do
 		if egg:IsA("Model") then
@@ -329,12 +508,15 @@ local function hatchBestEgg()
 	local eggName, eggDist = findClosestEgg()
 
 	if not customEgg or not eggName then
+		setCurrentAction("hatch egg — không tìm thấy egg gần")
 		return
 	end
 
 	if customDist < eggDist then
+		setCurrentAction("hatch custom egg: " .. customEgg.Name)
 		networkModule.Invoke("CustomEggs_Hatch", tostring(customEgg), maxHatch)
 	else
+		setCurrentAction("hatch egg: " .. tostring(eggName))
 		networkModule.Invoke("Eggs_RequestPurchase", eggName, maxHatch)
 	end
 end
@@ -374,9 +556,10 @@ local function hasPotionUpgrade(neededAmount)
 	for uid, potion in pairs(questState.Potion or {}) do
 		if isCombinablePotion(potion) then
 			setthreadidentity(4)
-			local required = calcPotionsPerTier(potion.tn) * neededAmount
+			local ok, result = pcall(calcPotionsPerTier, potion.tn)
+			local required = ok and (result * neededAmount) or (2 ^ potion.tn)
 			local amount = potion._am or 1
-			if required <= amount then
+			if required <= amount or neededAmount <= 0 then
 				return true, uid, amount
 			end
 		end
@@ -388,9 +571,10 @@ local function hasEnchantUpgrade(neededAmount)
 	for uid, enchant in pairs(questState.Enchant or {}) do
 		if isCombinableEnchant(enchant) then
 			setthreadidentity(4)
-			local required = calcEnchantsPerTier(enchant.tn) * neededAmount
+			local ok, result = pcall(calcEnchantsPerTier, enchant.tn)
+			local required = ok and (result * neededAmount) or (2 ^ enchant.tn)
 			local amount = enchant._am or 1
-			if required <= amount then
+			if required <= amount or neededAmount <= 0 then
 				return true, uid, amount
 			end
 		end
@@ -425,6 +609,7 @@ local function getActiveQuests()
 			priority = getQuestPriority(questName),
 			amount = goal.Amount,
 			neededamount = goal.Amount - goal.Progress,
+			progress = goal.Progress,
 			queststars = goal.Stars,
 			id = goal.Type,
 			potiontier = goal.PotionTier,
@@ -448,6 +633,7 @@ local function getZoneGateQuests()
 		priority = getQuestPriority(questName),
 		amount = zoneQuest.Amount,
 		neededamount = zoneQuest.Amount - zoneQuest.Progress,
+		progress = zoneQuest.Progress,
 		id = zoneQuest.Type,
 		potiontier = zoneQuest.PotionTier,
 	})
@@ -462,13 +648,17 @@ local function sortQuestsByPriority(list)
 	return list
 end
 
-local function highlightQuest(questStars)
+local function getQuestFrames()
 	local playerGui = localPlayer:FindFirstChildOfClass("PlayerGui")
 	local goalsSide = playerGui and playerGui:FindFirstChild("GoalsSide")
 	local frame = goalsSide and goalsSide:FindFirstChild("Frame")
 	local quests = frame and frame:FindFirstChild("Quests")
 	local gradient = quests and quests:FindFirstChild("QuestsGradient")
-	local holder = gradient and gradient:FindFirstChild("QuestsHolder")
+	return gradient and gradient:FindFirstChild("QuestsHolder")
+end
+
+local function highlightQuest(questStars)
+	local holder = getQuestFrames()
 	if not holder then
 		return
 	end
@@ -476,9 +666,29 @@ local function highlightQuest(questStars)
 	for _, questFrame in ipairs(holder:GetChildren()) do
 		if questFrame:IsA("Frame") and questFrame:FindFirstChild("Title") then
 			if questFrame.Name == tostring(questStars) then
-				questFrame.Title.TextColor3 = Color3.fromRGB(0, 170, 255)
+				questFrame.Title.TextColor3 = STATUS_COLOR
 			else
 				questFrame.Title.TextColor3 = Color3.fromRGB(255, 255, 255)
+			end
+		end
+	end
+end
+
+-- Mark the active quest text with the action label so the player can see it in the sidebar.
+local function markQuestLabel()
+	local holder = getQuestFrames()
+	if not holder or not currentQuest then
+		return
+	end
+
+	for _, questFrame in ipairs(holder:GetChildren()) do
+		if questFrame:IsA("Frame") and questFrame.Name == tostring(currentQuest.stars) then
+			local title = questFrame:FindFirstChild("Title")
+			if title and title:IsA("TextLabel") then
+				local baseText = title:GetAttribute("AutoRankBase") or title.Text
+				title:SetAttribute("AutoRankBase", baseText)
+				title.Text = string.format("[%s] %s", currentQuest.name, baseText)
+				title.TextColor3 = STATUS_COLOR
 			end
 		end
 	end
@@ -490,32 +700,47 @@ local makeQuest = {}
 makeQuest.BEST_RAINBOW_PET = function(quest)
 	local ok, uid = hasPetAmount(getPetsByRarity(1), quest.neededamount)
 	if ok then
+		setCurrentAction("rainbow machine")
 		networkModule.Invoke("RainbowMachine_Activate", uid, quest.neededamount + 1)
 	else
-		teleportToArea(quest.Folder)
+		setCurrentAction("teleport tới zone pet")
+		teleportToArea(quest.Folder or getMaximumZoneInfo())
 	end
 end
 
 makeQuest.BEST_GOLD_PET = function(quest)
 	local ok, uid = hasPetAmount(getPetsByRarity(0), quest.neededamount)
 	if ok then
+		setCurrentAction("gold machine")
 		networkModule.Invoke("GoldMachine_Activate", uid, quest.neededamount + 1)
 	else
-		teleportToArea(quest.Folder)
+		setCurrentAction("teleport tới zone pet")
+		teleportToArea(quest.Folder or getMaximumZoneInfo())
 	end
 end
 
 makeQuest.COLLECT_POTION = function(quest)
 	combinePotions(quest.neededamount)
+	refreshInventory()
+	if not hasPotionUpgrade(quest.neededamount) then
+		setCurrentAction("không còn potion để upgrade — teleport tới máy")
+		teleportToArea(quest.Folder or getMaximumZoneInfo())
+	end
 end
 
 makeQuest.COLLECT_ENCHANT = function(quest)
 	combineEnchants(quest.neededamount)
+	refreshInventory()
+	if not hasEnchantUpgrade(quest.neededamount) then
+		setCurrentAction("không còn enchant để upgrade — teleport tới máy")
+		teleportToArea(quest.Folder or getMaximumZoneInfo())
+	end
 end
 
 local function useMiscQuest(itemId, remoteAction)
 	return function(quest)
-		teleportToArea(quest.Folder)
+		setCurrentAction("dùng " .. itemId)
+		teleportToArea(quest.Folder or getMaximumZoneInfo())
 		useMiscItem(itemId, remoteAction)
 	end
 end
@@ -526,11 +751,13 @@ makeQuest.BEST_LUCKYBLOCK = useMiscQuest("Mini Lucky Block", "MiniLuckyBlock_Con
 makeQuest.BEST_PINATA = useMiscQuest("Mini Pinata", "MiniPinata_Consume")
 
 makeQuest.USE_POTION = function(quest)
+	setCurrentAction("uống potion tier " .. tostring(quest.potiontier))
 	usePotion(quest.potiontier, quest.neededamount)
 end
 
 makeQuest.CURRENT_BREAKABLE = function(quest)
-	teleportToArea(quest.Folder)
+	setCurrentAction("đập breakable")
+	teleportToArea(quest.Folder or getMaximumZoneInfo())
 end
 makeQuest.BREAKABLE = makeQuest.CURRENT_BREAKABLE
 
@@ -539,6 +766,7 @@ makeQuest.HATCH_RARE_PET = function(quest)
 	local eggName = HATCH_RARE_PET_EGGS[worldNumber]
 	local hrp = getHrp()
 	if eggName and hrp then
+		setCurrentAction("hatch rare pet: " .. eggName)
 		hrp.CFrame = workspaceService.__THINGS.Eggs["World" .. worldNumber][eggName].Tier.CFrame
 		hatchBestEgg()
 	end
@@ -551,6 +779,7 @@ makeQuest.BEST_EGG = function(quest)
 	local coins = getCoins()
 
 	if not bestEggModule or not eggInstance then
+		setCurrentAction("không tìm thấy egg #" .. tostring(getBestEggNumber()))
 		return
 	end
 
@@ -559,7 +788,8 @@ makeQuest.BEST_EGG = function(quest)
 	local neededAmount = quest.neededamount or 1
 
 	if coins < price * neededAmount then
-		teleportToArea(zoneInfo.Folder)
+		setCurrentAction("thiếu tiền hatch egg")
+		teleportToArea(zoneInfo)
 		return
 	end
 
@@ -580,7 +810,8 @@ end
 local function makeQuestFor(questName, questData)
 	local handler = makeQuest[questName]
 	if not handler then
-		teleportToArea(getMaximumZoneInfo().Folder)
+		setCurrentAction("không có handler — teleport về zone")
+		teleportToArea(getMaximumZoneInfo())
 		return
 	end
 
@@ -623,16 +854,21 @@ end
 local function runQuest(quest)
 	local check = requiresResources[quest.questname]
 	if check and not check(quest) then
-		print("Not enough resources for:", quest.questname)
-		return
+		print(string.format("[AutoRank] Bỏ qua %s — thiếu tài nguyên (cần %s, đang có %s/%s)",
+			tostring(quest.questname), tostring(quest.neededamount),
+			tostring(quest.progress or 0), tostring(quest.amount)))
+		return false
 	end
 
+	setCurrentQuest(quest)
 	highlightQuest(quest.queststars)
+	markQuestLabel()
 	makeQuestFor(quest.questname, {
 		amount = quest.amount,
 		potiontier = quest.potiontier,
 		neededamount = quest.neededamount,
 	})
+	return true
 end
 
 local function handleZoneProgression()
@@ -644,25 +880,31 @@ local function handleZoneProgression()
 
 	if not nextZone then
 		if nextRebirth and zoneInfo.Number >= nextRebirth.ZoneNumberRequired then
+			setCurrentAction("rebirth lần " .. tostring(nextRebirth.RebirthNumber))
 			rebirthCmds.Rebirth(tostring(nextRebirth.RebirthNumber))
 		else
-			teleportToArea(zoneInfo.Folder)
+			setCurrentAction("farm zone hiện tại (đã ở zone cuối)")
+			teleportToArea(zoneInfo)
 		end
 		return
 	end
 
 	if zoneInfo.World ~= nextZone.WorldNumber then
+		setCurrentAction("chuyển world " .. tostring(nextZone.WorldNumber))
 		networkModule.Invoke("World" .. nextZone.WorldNumber .. "Teleport")
-		teleportToArea(nextZone.ZoneFolder)
+		teleportToArea(nextZone)
 		return
 	end
 
 	if nextRebirth and zoneInfo.Number >= nextRebirth.ZoneNumberRequired then
+		setCurrentAction("rebirth lần " .. tostring(nextRebirth.RebirthNumber))
 		rebirthCmds.Rebirth(tostring(nextRebirth.RebirthNumber))
 	elseif gatePrice and gatePrice <= coins then
+		setCurrentAction("mua zone " .. tostring(nextZone.ZoneNumber))
 		networkModule.Invoke("Zones_RequestPurchase", nextZone._id)
 	else
-		teleportToArea(zoneInfo.Folder)
+		setCurrentAction("farm zone hiện tại (chưa đủ tiền mua zone)")
+		teleportToArea(zoneInfo)
 	end
 end
 
@@ -671,30 +913,66 @@ local function initQuest()
 
 	if getMaximumZoneInfo().Number == zoneCmds.GetMaximumOverallZone().ZoneNumber then
 		for _, quest in ipairs(sortQuestsByPriority(getActiveQuests())) do
-			runQuest(quest)
+			if runQuest(quest) then
+				return currentQuest
+			end
 		end
-		return
+		clearCurrentQuest()
+		return nil
 	end
 
 	if getCurrentZoneQuests() then
-		print("MAKING ZONEGATEQUEST")
 		handleZoneProgression()
 		for _, quest in ipairs(sortQuestsByPriority(getZoneGateQuests())) do
-			runQuest(quest)
+			if runQuest(quest) then
+				return currentQuest
+			end
 		end
-		return
+		clearCurrentQuest()
+		return nil
 	end
 
-	print("Farm Areas")
+	clearCurrentQuest()
 	handleZoneProgression()
+	return nil
 end
 
-getgenv().AutoRank = {
+-- Public API.
+local autoRank = {
 	init = initQuest,
 	getActiveQuests = getActiveQuests,
 	getZoneGateQuests = getZoneGateQuests,
 	getBestEggNumber = getBestEggNumber,
 	getCoins = getCoins,
+	getStatus = function()
+		return {
+			current = currentQuest,
+			action = currentAction,
+			elapsed = currentQuest and (os.clock() - questStartedAt) or 0,
+			history = questHistory,
+		}
+	end,
+	printStatus = function()
+		print("[AutoRank] " .. describeStatus())
+	end,
 }
+
+getgenv().AutoRank = autoRank
+
+-- Print the current quest every STATUS_REFRESH seconds so it is obvious what the bot is doing.
+task.spawn(function()
+	while autoRank do
+		print("[AutoRank] " .. describeStatus())
+		task.wait(STATUS_REFRESH)
+	end
+end)
+
+-- Keep the quest label text patched in case the UI re-renders the title.
+runService.Heartbeat:Connect(function()
+	if not currentQuest then
+		return
+	end
+	pcall(markQuestLabel)
+end)
 
 return initQuest
