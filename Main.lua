@@ -1,6 +1,7 @@
 -- =====================================================
--- VRT HUB — PET SIMULATOR 99 v1.9.1
--- Bỏ hết debug buttons + debug functions
+-- VRT HUB — PET SIMULATOR 99 v1.9.3
+-- Bỏ hết button "once/now", chỉ giữ toggle
+-- Flag: chỉ dùng khi trong zone, không teleport
 -- =====================================================
 
 if getgenv().VRT_LOADED then
@@ -201,7 +202,7 @@ end
 -- -----------------------------------------------------
 local vrt = getgenv().VRT or {}
 getgenv().VRT = vrt
-vrt.Version = "1.9.1"
+vrt.Version = "1.9.3"
 vrt.connections = {}
 vrt.loops = {}
 vrt.fruitLog = {}
@@ -264,7 +265,6 @@ local defaults = {
 	Comet = false,
 	AutoRank = false,
 	SelectedFlag = "Coins Flag",
-	UseSelectedFlag = false,
 	AutoUseFlagInZone = false,
 	FlagAmount = 45,
 	AutoMerchant = false,
@@ -326,7 +326,7 @@ local PERSIST_KEYS = {
 	"CardCombine", "FusePets", "GoldMachine", "RainbowMachine",
 	"CoinJar", "Comet",
 	"AutoRank",
-	"SelectedFlag", "UseSelectedFlag", "AutoUseFlagInZone", "FlagAmount",
+	"SelectedFlag", "AutoUseFlagInZone", "FlagAmount",
 	"AutoMerchant", "MerchantReturnToPos",
 	"AutoClaimExpedition", "ExpeditionFallbackTeleport",
 	"DMMaxCamp", "UseFarmPoint", "UseDMFarmPoint",
@@ -647,7 +647,8 @@ notifyGui.ResetOnSpawn = false
 notifyGui.IgnoreGuiInset = true
 notifyGui.DisplayOrder = 999
 
-do
+local function ensureNotifyGuiParent()
+	if notifyGui.Parent then return true end
 	local parent
 	pcall(function() parent = gethui() end)
 	if not parent then
@@ -655,10 +656,15 @@ do
 		parent = ok and cg or nil
 	end
 	if not parent then
-		parent = localPlayer:WaitForChild("PlayerGui")
+		parent = localPlayer:FindFirstChild("PlayerGui")
 	end
-	notifyGui.Parent = parent
+	if parent then
+		notifyGui.Parent = parent
+		return true
+	end
+	return false
 end
+ensureNotifyGuiParent()
 
 local activeNotifs = {}
 
@@ -688,6 +694,7 @@ local function pickNextColor()
 end
 
 local function showEggNotification(eggName, maxHatch)
+	if not ensureNotifyGuiParent() then return end
 	while #activeNotifs >= 3 do
 		local oldest = table.remove(activeNotifs, 1)
 		if oldest and oldest.Parent then
@@ -735,7 +742,7 @@ local function showEggNotification(eggName, maxHatch)
 end
 
 -- -----------------------------------------------------
--- Hide Egg Anim
+-- Hide Egg Anim (RenderStepped — max frequency)
 -- -----------------------------------------------------
 vrt.eggGuiConnections = {}
 
@@ -747,13 +754,6 @@ local function hideEggGuis()
 		if target.Enabled then
 			target.Enabled = false
 		end
-		if not vrt.eggGuiConnections[target] then
-			vrt.eggGuiConnections[target] = target:GetPropertyChangedSignal("Enabled"):Connect(function()
-				if settings.HideEggAnim and target.Enabled then
-					target.Enabled = false
-				end
-			end)
-		end
 	end
 	for _, name in ipairs({ "HatchSettings", "LootMessage" }) do
 		local gui = playerGui:FindFirstChild(name)
@@ -763,39 +763,98 @@ local function hideEggGuis()
 	end
 end
 
-task.spawn(function()
-	while getgenv().VRT_LOADED do
-		if settings.HideEggAnim then
-			pcall(hideEggGuis)
-		end
-		task.wait(0.05)
+runService.RenderStepped:Connect(function()
+	if not getgenv().VRT_LOADED then return end
+	if not settings.HideEggAnim then return end
+	local playerGui = localPlayer:FindFirstChild("PlayerGui")
+	if not playerGui then return end
+	local target = playerGui:FindFirstChild("EggOpenAnimation")
+	if target and target:IsA("ScreenGui") and target.Enabled then
+		target.Enabled = false
 	end
 end)
 
 -- -----------------------------------------------------
--- Egg animation hook.
+-- Egg animation hook
 -- -----------------------------------------------------
-local eggFrontend
-do
-	local ok, env = pcall(function()
-		return getsenv(localPlayer.PlayerScripts.Scripts.Game["Egg Opening Frontend"])
-	end)
-	if ok then
-		eggFrontend = env
+local eggFrontend = nil
+local eggFrontendPath = nil
+
+local function findEggFrontend()
+	local paths = {
+		{ "PlayerScripts", "Scripts", "Game", "Egg Opening Frontend" },
+		{ "PlayerScripts", "Scripts", "Core", "Egg Opening Frontend" },
+		{ "PlayerScripts", "PlayerModule", "Egg Opening Frontend" },
+		{ "PlayerScripts", "Scripts", "Game", "Eggs" },
+		{ "PlayerScripts", "Scripts", "Game", "Hatching" },
+	}
+	for _, path in ipairs(paths) do
+		local node = localPlayer
+		for _, name in ipairs(path) do
+			node = node and node:FindFirstChild(name)
+		end
+		if node then
+			local ok, env = pcall(getsenv, node)
+			if ok and typeof(env) == "table" then
+				eggFrontend = env
+				eggFrontendPath = table.concat(path, ".")
+				return true
+			end
+		end
 	end
+	return false
+end
+
+local function scanForPlayEgg()
+	local playerScripts = localPlayer:FindFirstChild("PlayerScripts")
+	if not playerScripts then return false end
+	for _, script in ipairs(playerScripts:GetDescendants()) do
+		if script:IsA("LocalScript") or script:IsA("ModuleScript") then
+			local ok, env = pcall(getsenv, script)
+			if ok and typeof(env) == "table" then
+				for name, value in pairs(env) do
+					if typeof(name) == "string" and typeof(value) == "function"
+						and (name:lower():find("playegg") or name:lower():find("egganim"))
+					then
+						eggFrontend = env
+						eggFrontendPath = "scan:" .. script.Name .. "." .. name
+						return true
+					end
+				end
+			end
+		end
+	end
+	return false
+end
+
+if not findEggFrontend() then
+	scanForPlayEgg()
 end
 
 local function installEggHook()
 	if not eggFrontend then return end
+	local funcName = "PlayEggAnimation"
+	if typeof(eggFrontend[funcName]) ~= "function" then
+		for _, name in ipairs({ "PlayEggAnimation", "PlayAnimation", "PlayEgg", "PlayHatch" }) do
+			if typeof(eggFrontend[name]) == "function" then
+				funcName = name
+				break
+			end
+		end
+	end
+	if typeof(eggFrontend[funcName]) ~= "function" then return end
+
 	if getgenv().VRT_ORIGINAL_PLAY_EGG then
 		pcall(function()
-			eggFrontend.PlayEggAnimation = getgenv().VRT_ORIGINAL_PLAY_EGG
+			eggFrontend[funcName] = getgenv().VRT_ORIGINAL_PLAY_EGG
 		end)
 	else
-		getgenv().VRT_ORIGINAL_PLAY_EGG = eggFrontend.PlayEggAnimation
+		getgenv().VRT_ORIGINAL_PLAY_EGG = eggFrontend[funcName]
+		getgenv().VRT_ORIGINAL_PLAY_EGG_NAME = funcName
 	end
 	local originalPlayEgg = getgenv().VRT_ORIGINAL_PLAY_EGG
 	vrt.originalPlayEgg = originalPlayEgg
+
 	local hook
 	if settings.HookEggAnimation then
 		hook = function(eggName, ...)
@@ -819,10 +878,21 @@ local function installEggHook()
 	end
 	pcall(setstackhidden, hook, true)
 	pcall(debug.setinfo, hook, "s", "[C]")
-	eggFrontend.PlayEggAnimation = hook
+	eggFrontend[funcName] = hook
 end
 
-installEggHook()
+task.spawn(function()
+	for _ = 1, 10 do
+		if eggFrontend then break end
+		if not findEggFrontend() then
+			scanForPlayEgg()
+		end
+		task.wait(1)
+	end
+	if eggFrontend then
+		installEggHook()
+	end
+end)
 
 -- -----------------------------------------------------
 -- Helpers.
@@ -1290,26 +1360,10 @@ Core.ClickAuraViz = function()
 	viz.CFrame = CFrame.new(root.Position) * VIZ_ROTATION
 end
 
+-- Custom egg — NO TELEPORT
 local function hatchCustomEgg(uuid)
 	if not uuid or uuid == "" then return 0 end
 	local maxHatch = getMaxHatch()
-
-	local cmds = Modules.CustomEggsCmds
-	local eggData = nil
-	if cmds and typeof(cmds.All) == "function" then
-		local ok, list = pcall(cmds.All)
-		if ok and typeof(list) == "table" then
-			eggData = list[uuid]
-		end
-	end
-
-	if eggData and eggData._position then
-		local root = getRoot()
-		if root and (root.Position - eggData._position).Magnitude > 10 then
-			root.CFrame = CFrame.new(eggData._position + Vector3.new(0, 5, 0))
-			task.wait(0.3)
-		end
-	end
 
 	local okBatch, result = invoke("CustomEggs_Hatch", uuid, maxHatch)
 	if okBatch and result == true then
@@ -1367,53 +1421,10 @@ Core.OpenEgg = function()
 	end
 end
 
+-- Open selected egg — NO TELEPORT
 Core.OpenSelectedEgg = function()
 	local eggId = settings.SelectedEggId
 	if not eggId or eggId == "" then return end
-	local eggNumber = getEggNumberById(eggId)
-	if not eggNumber then return end
-
-	local things = workspace:FindFirstChild("__THINGS")
-	if not things then return end
-	local worldName
-	if Modules.WorldsUtil and Modules.WorldsUtil.GetEggsModelName then
-		local ok, name = pcall(Modules.WorldsUtil.GetEggsModelName)
-		worldName = ok and name or nil
-	end
-	if not worldName then return end
-
-	local function findEgg(container)
-		if not container then return nil end
-		for _, model in ipairs(container:GetChildren()) do
-			if model:IsA("Model") then
-				local num = tonumber(model.Name:match("^(%d+)"))
-				if num == eggNumber then return model end
-			end
-		end
-		return nil
-	end
-
-	local found
-	local zoneEggs = things:FindFirstChild("ZoneEggs")
-	if zoneEggs and zoneEggs:FindFirstChild(worldName) then
-		found = findEgg(zoneEggs[worldName])
-	end
-	if not found then
-		local eggs = things:FindFirstChild("Eggs")
-		if eggs and eggs:FindFirstChild(worldName) then
-			found = findEgg(eggs[worldName])
-		end
-	end
-	if not found then return end
-
-	local root = getRoot()
-	if root then
-		local light = found:FindFirstChild("Light")
-		local pos = light and light.CFrame.Position or found.WorldPivot.Position
-		root.CFrame = CFrame.new(pos + Vector3.new(0, 5, 0))
-		task.wait(0.2)
-	end
-
 	invoke("Eggs_RequestPurchase", eggId, getMaxHatch())
 end
 
@@ -1605,7 +1616,7 @@ Core.BuyEggSlots = function()
 end
 
 -- -----------------------------------------------------
--- FLAG (auto-use in zone, no teleport)
+-- FLAG (chỉ dùng khi trong zone, KHÔNG teleport)
 -- -----------------------------------------------------
 local flagAutoCache = {
 	lastCheck = 0,
@@ -1716,28 +1727,28 @@ end
 local function checkZoneFlag(anchorPos)
 	local flagCmds = Modules.FlexibleFlagCmds
 	if not flagCmds or typeof(flagCmds.SpatialQuery) ~= "function" then
-		return false, nil, nil
+		return false, nil, nil, nil
 	end
-	if not anchorPos then return false, nil, nil end
+	if not anchorPos then return false, nil, nil, nil end
 	local ok, ctx = pcall(flagCmds.SpatialQuery, anchorPos)
-	if not ok or not ctx then return false, nil, nil end
+	if not ok or not ctx then return false, nil, nil, nil end
 	local endTime = ctx.EndTime
 	if endTime and endTime <= os.time() then
-		return false, ctx.FlagId, endTime
+		return false, ctx.FlagId, endTime, ctx
 	end
-	return true, ctx.FlagId, endTime
+	return true, ctx.FlagId, endTime, ctx
 end
 
-local function tryConsumeFlag(flagId, amount)
+local function tryConsumeFlagWithCtx(flagId, amount, ctx, pos)
 	local flagCmds = Modules.FlexibleFlagCmds
 	local zoneFlagCmds = Modules.ZoneFlagCmds
+	local zoneFlagsDir = Modules.ZoneFlagsDir
 	local root = getRoot()
 	if not root then return false, "no root" end
 
 	local info = getInstanceInfo()
 	local instanceId = info and info.InstanceId
 	local areaId = info and info.AreaId
-	local pos = root.Position
 
 	local attempts = {}
 	local function try(label, fn, ...)
@@ -1747,92 +1758,68 @@ local function tryConsumeFlag(flagId, amount)
 		return success
 	end
 
-	if typeof(flagCmds) == "table" and flagCmds.Consume then
-		if try("con-pos", flagCmds.Consume, flagId, amount, pos) then
-			return true, "con-pos"
-		end
-		if instanceId and try("con-instanceId", flagCmds.Consume, flagId, amount, instanceId) then
-			return true, "con-instanceId"
-		end
-		if areaId and try("con-areaId", flagCmds.Consume, flagId, amount, areaId) then
-			return true, "con-areaId"
-		end
-		if try("con-2args", flagCmds.Consume, flagId, amount) then
-			return true, "con-2args"
+	if typeof(flagCmds) == "table" and typeof(flagCmds.ActivateFlag) == "function" and zoneFlagsDir then
+		local flagDir = zoneFlagsDir[flagId]
+		if flagDir then
+			if try("activate-dir", flagCmds.ActivateFlag, flagDir) then
+				return true, "activate-dir"
+			end
+			if try("activate-dir-amount", flagCmds.ActivateFlag, flagDir, amount) then
+				return true, "activate-dir-amount"
+			end
 		end
 	end
 
-	if typeof(flagCmds) == "table" and flagCmds.ActivateFlag then
-		if try("act-pos", flagCmds.ActivateFlag, flagId, pos) then
-			return true, "act-pos"
+	if ctx and typeof(flagCmds) == "table" and flagCmds.Consume then
+		if try("flex-ctx", flagCmds.Consume, flagId, amount, ctx) then
+			return true, "flex-ctx"
 		end
-		if try("act-flag", flagCmds.ActivateFlag, flagId) then
-			return true, "act-flag"
+	end
+
+	if typeof(flagCmds) == "table" and flagCmds.Consume then
+		if try("flex-pos", flagCmds.Consume, flagId, amount, pos) then
+			return true, "flex-pos"
+		end
+		if instanceId and try("flex-instanceId", flagCmds.Consume, flagId, amount, instanceId) then
+			return true, "flex-instanceId"
+		end
+		if areaId and try("flex-areaId", flagCmds.Consume, flagId, amount, areaId) then
+			return true, "flex-areaId"
+		end
+		if try("flex-2args", flagCmds.Consume, flagId, amount) then
+			return true, "flex-2args"
 		end
 	end
 
 	if typeof(zoneFlagCmds) == "table" and zoneFlagCmds.Consume then
-		if try("zcon-pos", zoneFlagCmds.Consume, flagId, amount, pos) then
-			return true, "zcon-pos"
+		if ctx and try("zflex-ctx", zoneFlagCmds.Consume, flagId, amount, ctx) then
+			return true, "zflex-ctx"
 		end
-		if try("zcon-2args", zoneFlagCmds.Consume, flagId, amount) then
-			return true, "zcon-2args"
+		if try("zflex-pos", zoneFlagCmds.Consume, flagId, amount, pos) then
+			return true, "zflex-pos"
 		end
 	end
 
-	if try("remote-flex-pos", function()
+	if ctx and try("remote-ctx", function()
+		return invoke("FlexibleFlags_Consume", flagId, amount, ctx)
+	end) then
+		return true, "remote-ctx"
+	end
+	if try("remote-pos", function()
 		return invoke("FlexibleFlags_Consume", flagId, amount, pos)
 	end) then
-		return true, "remote-flex-pos"
+		return true, "remote-pos"
 	end
-	if try("remote-flex-2args", function()
+	if try("remote-2args", function()
 		return invoke("FlexibleFlags_Consume", flagId, amount)
 	end) then
-		return true, "remote-flex-2args"
+		return true, "remote-2args"
 	end
 
 	return false, attempts
 end
 
-Core.ActivateFlag = function()
-	local flagId = settings.SelectedFlag
-	if not flagId or flagId == "" then return end
-
-	local now = os.clock()
-	if vrt.lastFlagAttempt and now - vrt.lastFlagAttempt < 2 then return end
-	vrt.lastFlagAttempt = now
-
-	local owned, resolvedId = Core.GetFlagOwnedAmount(flagId)
-	if owned <= 0 then
-		if not vrt.flagWarned then vrt.flagWarned = {} end
-		if not vrt.flagWarned[flagId] then
-			vrt.flagWarned[flagId] = true
-			warn(("[VRT] Không có %s trong inventory (resolved=%s)"):format(flagId, tostring(resolvedId)))
-		end
-		return
-	end
-
-	local requested = settings.FlagAmount or 45
-	local gameMax = getFlagGameMax(resolvedId)
-	local amount = math.min(requested, owned, gameMax)
-	if amount <= 0 then return end
-
-	local ok, used = tryConsumeFlag(resolvedId, amount)
-	if ok then
-		invalidateSaveCache()
-		if not vrt.flagSuccessLogged then
-			vrt.flagSuccessLogged = true
-			print(("[VRT] Flag used: %s x%d via %s"):format(resolvedId, amount, tostring(used)))
-		end
-		return
-	end
-
-	if not vrt.flagFailLogged then
-		vrt.flagFailLogged = true
-		warn(("[VRT] Flag consume FAILED: %s x%d"):format(resolvedId, amount))
-	end
-end
-
+-- Chỉ dùng khi trong zone, KHÔNG teleport
 Core.AutoUseFlag = function()
 	local root = getRoot()
 	if not root then return end
@@ -1847,7 +1834,7 @@ Core.AutoUseFlag = function()
 		return
 	end
 
-	local hasFlag, existingFlagId, endTime = checkZoneFlag(zoneInfo.anchorPos)
+	local hasFlag, existingFlagId, endTime, existingCtx = checkZoneFlag(zoneInfo.anchorPos)
 	if hasFlag then
 		if not flagAutoCache.zoneLog[zoneInfo.id] then
 			flagAutoCache.zoneLog[zoneInfo.id] = existingFlagId
@@ -1859,6 +1846,14 @@ Core.AutoUseFlag = function()
 		return
 	end
 
+	if existingFlagId and endTime and endTime <= os.time() then
+		local flagCmds = Modules.FlexibleFlagCmds
+		if flagCmds and typeof(flagCmds.DeactivateFlag) == "function" then
+			pcall(flagCmds.DeactivateFlag, existingFlagId)
+			task.wait(0.5)
+		end
+	end
+
 	if now - flagAutoCache.lastConsume < 5 then return end
 
 	local selectedFlag = settings.SelectedFlag
@@ -1868,7 +1863,8 @@ Core.AutoUseFlag = function()
 	local amount = math.min(settings.FlagAmount or 45, owned, getFlagGameMax(resolvedId))
 	if amount <= 0 then return end
 
-	local ok, used = tryConsumeFlag(resolvedId, amount)
+	-- Dùng ctx từ zone anchor (không teleport)
+	local ok, used = tryConsumeFlagWithCtx(resolvedId, amount, existingCtx, root.Position)
 	if ok then
 		flagAutoCache.lastConsume = now
 		flagAutoCache.lastZone = zoneInfo.id
@@ -1877,11 +1873,12 @@ Core.AutoUseFlag = function()
 		print(("[VRT] Flag auto-used: %s x%d in zone %s via %s"):format(
 			resolvedId, amount, zoneInfo.id, tostring(used)
 		))
-	else
-		if not flagAutoCache.failLog[zoneInfo.id] then
-			flagAutoCache.failLog[zoneInfo.id] = true
-			warn(("[VRT] Flag auto-use FAILED in zone %s"):format(zoneInfo.id))
-		end
+		return
+	end
+
+	if not flagAutoCache.failLog[zoneInfo.id] then
+		flagAutoCache.failLog[zoneInfo.id] = true
+		warn(("[VRT] Flag auto-use FAILED in zone %s"):format(zoneInfo.id))
 	end
 end
 
@@ -2533,6 +2530,7 @@ end
 Core.CombineKeysAll = function() combineKeys(false) end
 Core.CombineKeysOnce = function() combineKeys(true) end
 
+-- Gift bags — loop to open max
 Core.OpenGiftBags = function()
 	local gifts = getGiftIds()
 	local wanted = resolveSelection(settings.SelectedGifts, gifts)
@@ -2540,29 +2538,57 @@ Core.OpenGiftBags = function()
 		local entry = findInventoryEntry(itemId)
 		local amount = entry and (entry._am or 0) or 0
 		if amount > 0 then
-			invoke("GiftBag_Open", itemId, amount)
-			invalidateSaveCache()
-			task.wait(0.6)
+			local okBatch, result = invoke("GiftBag_Open", itemId, amount)
+			if okBatch and result then
+				invalidateSaveCache()
+				task.wait(0.3)
+			else
+				local opened = 0
+				for i = 1, amount do
+					local ok = invoke("GiftBag_Open", itemId)
+					if not ok then break end
+					opened += 1
+					if i % 10 == 0 then
+						invalidateSaveCache()
+						task.wait(0.1)
+					end
+					if i >= 100 then break end
+				end
+				invalidateSaveCache()
+				task.wait(0.3)
+			end
 		end
 	end
 end
 
+-- Lootbox — round-robin 1 type per tick
+local lootboxIndex = 0
+
 Core.OpenLootboxes = function()
+	local lootboxes = getLootboxIds()
+	local wanted = resolveSelection(settings.SelectedLootboxes, lootboxes)
+	if #wanted == 0 then return end
+
+	lootboxIndex = (lootboxIndex % #wanted) + 1
+	local itemId = wanted[lootboxIndex]
+	local entry = findInventoryEntry(itemId)
+	local amount = entry and (entry._am or 0) or 0
+	if amount <= 0 then return end
+
+	local okBatch, result = invoke("Lootbox: Open", itemId, amount)
+	if okBatch and result ~= false then
+		invalidateSaveCache()
+		task.wait(0.3)
+		return
+	end
+
 	local cmds = Modules.LootboxCmds
 	local items = Modules.Items
 	if not cmds or not cmds.Open or not items or not items.Lootbox then return end
-	local lootboxes = getLootboxIds()
-	local wanted = resolveSelection(settings.SelectedLootboxes, lootboxes)
-	for _, itemId in ipairs(wanted) do
-		local entry = findInventoryEntry(itemId)
-		if entry and (entry._am or 0) > 0 then
-			local ok, box = pcall(items.Lootbox.From, items.Lootbox, entry)
-			if ok and typeof(box) == "table" then
-				pcall(cmds.Open, box, entry._am)
-				invalidateSaveCache()
-				task.wait(1)
-			end
-		end
+	local ok, box = pcall(items.Lootbox.From, items.Lootbox, entry)
+	if ok and typeof(box) == "table" then
+		pcall(cmds.Open, box, amount)
+		invalidateSaveCache()
 	end
 end
 
@@ -2647,10 +2673,6 @@ Core.FarmTreehouse = function()
 	invoke("TreehouseMerchant_Purchase", 1)
 	task.wait(1)
 	fire("Instancing_PlayerLeaveInstance", TREEHOUSE_ID)
-end
-
-Core.EquipBest = function()
-	fire("Pets_EquipBest")
 end
 
 Core.ClaimFakeCharacters = function()
@@ -4251,20 +4273,6 @@ if tabs.farm then
 			rayfield:Notify({ Title = "VRT", Content = "Đã xoá farm point", Duration = 3 })
 		end,
 	})
-	tabs.farm:CreateButton({
-		Name = "Teleport To Farm Point",
-		Callback = function()
-			if typeof(settings.FarmPoint) ~= "table" then
-				rayfield:Notify({ Title = "VRT", Content = "Chưa có farm point", Duration = 3 })
-				return
-			end
-			local root = getRoot()
-			if not root then return end
-			local fp = settings.FarmPoint
-			root.CFrame = CFrame.new(Vector3.new(fp.x, fp.y, fp.z))
-			rayfield:Notify({ Title = "VRT", Content = "Đã teleport", Duration = 2 })
-		end,
-	})
 
 	tabs.farm:CreateSection("Click Aura")
 	tabs.farm:CreateToggle({
@@ -4384,7 +4392,7 @@ if tabs.keys then
 		Callback = function(option) settings.SelectedGifts = option; queueSave() end,
 	})
 	tabs.keys:CreateToggle({
-		Name = "Open Selected Gift Bags", CurrentValue = settings.OpenGifts, Flag = "OpenGifts",
+		Name = "Open Selected Gift Bags (Max)", CurrentValue = settings.OpenGifts, Flag = "OpenGifts",
 		Callback = toggleLoop("OpenGifts", 1, Core.OpenGiftBags),
 	})
 
@@ -4396,8 +4404,8 @@ if tabs.keys then
 		Callback = function(option) settings.SelectedLootboxes = option; queueSave() end,
 	})
 	tabs.keys:CreateToggle({
-		Name = "Open Selected Lootboxes", CurrentValue = settings.OpenLootboxes, Flag = "OpenLootboxes",
-		Callback = toggleLoop("OpenLootboxes", 1.5, Core.OpenLootboxes),
+		Name = "Open Selected Lootboxes (1 type per tick)", CurrentValue = settings.OpenLootboxes, Flag = "OpenLootboxes",
+		Callback = toggleLoop("OpenLootboxes", 1, Core.OpenLootboxes),
 	})
 
 	tabs.keys:CreateSection("Fruits Section")
@@ -4414,13 +4422,6 @@ if tabs.keys then
 			queueSave()
 			vrt.fruitLog = {}
 			if value then startLoop("ConsumeFruits", 3, Core.ConsumeFruits) else stopLoop("ConsumeFruits") end
-		end,
-	})
-	tabs.keys:CreateButton({
-		Name = "Force Consume Now (once)",
-		Callback = function()
-			vrt.fruitLog = {}
-			Core.ConsumeFruits()
 		end,
 	})
 
@@ -4488,7 +4489,7 @@ if tabs.eggs then
 		Callback = function(option) settings.SelectedEggId = option[1]; queueSave() end,
 	})
 	tabs.eggs:CreateToggle({
-		Name = "Auto Open Selected Egg (Max)", CurrentValue = settings.OpenSelectedEgg, Flag = "OpenSelectedEgg",
+		Name = "Auto Open Selected Egg (Max, no teleport)", CurrentValue = settings.OpenSelectedEgg, Flag = "OpenSelectedEgg",
 		Callback = function(value)
 			settings.OpenSelectedEgg = value
 			queueSave()
@@ -4514,27 +4515,11 @@ if tabs.eggs then
 		end,
 	})
 	tabs.eggs:CreateToggle({
-		Name = "Auto Buy Selected Custom Egg (Max)", CurrentValue = settings.BuySelectedCustomEgg, Flag = "BuySelectedCustomEgg",
+		Name = "Auto Buy Selected Custom Egg (Max, no teleport)", CurrentValue = settings.BuySelectedCustomEgg, Flag = "BuySelectedCustomEgg",
 		Callback = function(value)
 			settings.BuySelectedCustomEgg = value
 			queueSave()
 			if value then startLoop("BuySelectedCustomEgg", 0.6, Core.BuySelectedCustomEgg) else stopLoop("BuySelectedCustomEgg") end
-		end,
-	})
-	tabs.eggs:CreateButton({
-		Name = "Hatch Selected Custom Egg (once, max)",
-		Callback = function()
-			local uuid = settings.SelectedCustomEggUuid
-			if not uuid or uuid == "" then
-				rayfield:Notify({ Title = "VRT", Content = "Chưa chọn custom egg", Duration = 3 })
-				return
-			end
-			local n = hatchCustomEgg(uuid)
-			rayfield:Notify({
-				Title = "Custom Egg",
-				Content = ("Hatched %d/%d"):format(n, getMaxHatch()),
-				Duration = 4,
-			})
 		end,
 	})
 
@@ -4582,10 +4567,6 @@ if tabs.auto then
 	tabs.auto:CreateToggle({
 		Name = "Collect Shiny Relics", CurrentValue = settings.Relics, Flag = "Relics",
 		Callback = toggleLoop("Relics", 5, Core.CollectRelics),
-	})
-	tabs.auto:CreateButton({
-		Name = "Equip Best Pets",
-		Callback = function() Core.EquipBest() end,
 	})
 
 	tabs.auto:CreateSection("Machine")
@@ -4660,27 +4641,6 @@ if tabs.auto then
 			end
 		end,
 	})
-	tabs.auto:CreateToggle({
-		Name = "Use Selected Flag (manual)", CurrentValue = settings.UseSelectedFlag, Flag = "UseSelectedFlag",
-		Callback = function(value)
-			settings.UseSelectedFlag = value
-			queueSave()
-			vrt.flagWarned = {}
-			vrt.flagInfoWarned = false
-			vrt.flagSuccessLogged = false
-			vrt.flagFailLogged = false
-			if value then startLoop("UseSelectedFlag", 2, Core.ActivateFlag) else stopLoop("UseSelectedFlag") end
-		end,
-	})
-	tabs.auto:CreateButton({
-		Name = "Use Flag Now (once, no teleport)",
-		Callback = function()
-			vrt.lastFlagAttempt = nil
-			vrt.flagSuccessLogged = false
-			vrt.flagFailLogged = false
-			Core.ActivateFlag()
-		end,
-	})
 end
 
 -- ================= UPDATE =================
@@ -4700,19 +4660,11 @@ if tabs.update then
 		Name = "Upgrade Shiny Fruits Only", CurrentValue = settings.UpgradeFruitsShiny, Flag = "UpgradeFruitsShiny",
 		Callback = toggleLoop("UpgradeFruitsShiny", 2, function() Core.UpgradeFruits(true) end),
 	})
-	tabs.update:CreateButton({
-		Name = "Upgrade Fruits Now",
-		Callback = function() Core.UpgradeFruits(false) end,
-	})
 
 	tabs.update:CreateSection("Potions")
 	tabs.update:CreateToggle({
 		Name = "Upgrade All Potions (Bulk)", CurrentValue = settings.UpgradePotions, Flag = "UpgradePotions",
 		Callback = toggleLoop("UpgradePotions", 2, Core.UpgradePotions),
-	})
-	tabs.update:CreateButton({
-		Name = "Upgrade Potions Now",
-		Callback = function() Core.UpgradePotions() end,
 	})
 
 	tabs.update:CreateSection("Enchants")
@@ -4726,17 +4678,9 @@ if tabs.update then
 		Name = "Upgrade All Enchants", CurrentValue = settings.UpgradeEnchants, Flag = "UpgradeEnchants",
 		Callback = toggleLoop("UpgradeEnchants", 2, Core.UpgradeEnchants),
 	})
-	tabs.update:CreateButton({
-		Name = "Upgrade Enchants Now",
-		Callback = function() Core.UpgradeEnchants() end,
-	})
 	tabs.update:CreateToggle({
 		Name = "Empower Selected Rarity", CurrentValue = settings.EmpowerEnchants, Flag = "EmpowerEnchants",
 		Callback = toggleLoop("EmpowerEnchants", 2, Core.EmpowerEnchants),
-	})
-	tabs.update:CreateButton({
-		Name = "Scrap Selected Rarity",
-		Callback = function() Core.ScrapEnchants() end,
 	})
 end
 
@@ -4858,18 +4802,6 @@ if tabs.event then
 		end,
 	})
 
-	tabs.event:CreateButton({
-		Name = "Buy From Merchant Now (once)",
-		Callback = function()
-			local result = Core.BuyFromMerchant()
-			rayfield:Notify({
-				Title = "Merchant",
-				Content = tostring(result),
-				Duration = 5,
-			})
-		end,
-	})
-
 	tabs.event:CreateSection("Claim Expedition")
 
 	tabs.event:CreateToggle({
@@ -4897,18 +4829,6 @@ if tabs.event then
 		Callback = function(value)
 			settings.ExpeditionFallbackTeleport = value
 			queueSave()
-		end,
-	})
-
-	tabs.event:CreateButton({
-		Name = "Claim Expedition Now (once)",
-		Callback = function()
-			local result = Core.ClaimExpedition()
-			rayfield:Notify({
-				Title = "Expedition",
-				Content = tostring(result),
-				Duration = 5,
-			})
 		end,
 	})
 
@@ -5053,14 +4973,6 @@ if tabs.secret then
 			if value then startLoop("AdminAbuse", 5, Core.ClaimFakeCharacters) else stopLoop("AdminAbuse") end
 		end,
 	})
-	tabs.secret:CreateButton({
-		Name = "Claim Hidden Exclusive Egg (Once)",
-		Callback = function() Core.ClaimFakeCharacters() end,
-	})
-	tabs.secret:CreateButton({
-		Name = "Claim Rank Rewards Now",
-		Callback = function() Core.ClaimRankRewards() end,
-	})
 
 	tabs.secret:CreateSection("Anti-Cheat")
 	tabs.secret:CreateToggle({
@@ -5105,6 +5017,7 @@ if tabs.secret then
 			merchantState.lastVisit = nil
 			merchantState.attempted = false
 			expeditionState.lastClaimAt = 0
+			lootboxIndex = 0
 			rayfield:Notify({ Title = "VRT", Content = "Đã xoá tất cả cache", Duration = 3 })
 		end,
 	})
@@ -5133,13 +5046,6 @@ if tabs.mailbox then
 	tabs.mailbox:CreateToggle({
 		Name = "Auto Claim Mailbox", CurrentValue = settings.MailboxClaim, Flag = "MailboxClaim",
 		Callback = toggleLoop("MailboxClaim", 10, Core.MailboxClaimAll),
-	})
-	tabs.mailbox:CreateButton({
-		Name = "Claim All Now",
-		Callback = function()
-			Core.MailboxClaimAll()
-			rayfield:Notify({ Title = "VRT", Content = "Claiming mailbox...", Duration = 3 })
-		end,
 	})
 	tabs.mailbox:CreateButton({
 		Name = "Reset Sent Huges",
@@ -5213,7 +5119,7 @@ task.spawn(function()
 	if settings.CombineKeysAll then startLoop("CombineKeysAll", 3, Core.CombineKeysAll) end
 	if settings.CombineKeysOnce then startLoop("CombineKeysOnce", 1.5, Core.CombineKeysOnce) end
 	if settings.OpenGifts then startLoop("OpenGifts", 1, Core.OpenGiftBags) end
-	if settings.OpenLootboxes then startLoop("OpenLootboxes", 1.5, Core.OpenLootboxes) end
+	if settings.OpenLootboxes then startLoop("OpenLootboxes", 1, Core.OpenLootboxes) end
 	if settings.ConsumeFruits then startLoop("ConsumeFruits", 3, Core.ConsumeFruits) end
 	if settings.FarmTreehouse then startLoop("FarmTreehouse", 5, Core.FarmTreehouse) end
 	if settings.OpenEgg then startLoop("OpenEgg", 0.3, Core.OpenEgg) end
@@ -5242,7 +5148,6 @@ task.spawn(function()
 	if settings.MailboxSendHuges then startLoop("MailboxSendHuges", 10, Core.MailboxSendHuges) end
 	if settings.MailboxClaim then startLoop("MailboxClaim", 10, Core.MailboxClaimAll) end
 	if settings.InfinitePetSpeed then Core.InfinitePetSpeed(true) end
-	if settings.UseSelectedFlag then startLoop("UseSelectedFlag", 2, Core.ActivateFlag) end
 	if settings.AutoUseFlagInZone then startLoop("AutoUseFlagInZone", 1, Core.AutoUseFlag) end
 	if settings.AutoMerchant then startLoop("AutoMerchant", 10, function() Core.BuyFromMerchant() end) end
 	if settings.AutoClaimExpedition then startLoop("AutoClaimExpedition", 5, function() Core.ClaimExpedition() end) end
@@ -5289,8 +5194,9 @@ getgenv().VRT_Unload = function()
 	end
 
 	if eggFrontend and getgenv().VRT_ORIGINAL_PLAY_EGG then
+		local funcName = getgenv().VRT_ORIGINAL_PLAY_EGG_NAME or "PlayEggAnimation"
 		pcall(function()
-			eggFrontend.PlayEggAnimation = getgenv().VRT_ORIGINAL_PLAY_EGG
+			eggFrontend[funcName] = getgenv().VRT_ORIGINAL_PLAY_EGG
 		end)
 	end
 
