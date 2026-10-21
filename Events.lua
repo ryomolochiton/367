@@ -1,38 +1,27 @@
 -- =====================================================
--- VRT DIAGNOSTIC v4.1 — MERCHANT PRECISE TELEPORT
--- Tele chính xác vào Merchant part + verify distance + retry
--- Save -> VRT/VRT_Diag4.txt
+-- VRT DIAGNOSTIC v5.0 — Flag SpatialQuery hunt / Fruit verify / Merchant deep
+-- Save -> VRT/VRT_Diag5.txt
 -- CHẠY KHI ĐANG Ở TRONG DIAMOND MOUNTAIN
 -- =====================================================
 
 local CONFIG = {
-	TEST_FLAG = true,
-	TEST_FLAG_ALL_SIGNATURES = true,
-	TEST_FLAG_ALL_TYPES = true,
-	FLAG_SIGNATURE_PROBE = "Coins Flag",
+	-- FLAG: scan 100+ positions để tìm chỗ SpatialQuery non-nil
+	TEST_FLAG_SCAN = true,
+	TEST_FLAG_CONSUME = true,
+	TEST_FLAG_ACTIVATE = true,
+	FLAG_TO_TEST = "Coins Flag",
 
+	-- FRUIT: verify inventory diff trước/sau
 	TEST_FRUIT = true,
-	TEST_FRUIT_ALL_SIGNATURES = true,
-	TEST_FRUIT_ALL_TYPES = true,
-	FRUIT_AMOUNT = 1,
+	FRUIT_AMOUNT = 5,
 
-	TEST_EGG = true,
-	TEST_EGG_BATCH = true,
-	TEST_EGG_LOOP = true,
-	EGG_BATCH_MAX = 58,
-	EGG_LOOP_MAX = 5,
-
+	-- MERCHANT: deep inspect + all remote signatures
 	TEST_MERCHANT = true,
 	TEST_MERCHANT_PURCHASE = true,
-	MERCHANT_PURCHASE_IDS = { "1", "2", "3", "4", "5", "6", "7", "8" },
-
-	-- Teleport verify threshold (studs)
-	TELEPORT_VERIFY_DIST = 8,
-	TELEPORT_RETRY = 3,
 
 	MAX_TABLE_ENTRIES = 40,
 	MAX_DEPTH = 4,
-	WAIT_BETWEEN_TESTS = 0.4,
+	WAIT = 0.35,
 }
 
 local playersService = game:GetService("Players")
@@ -42,10 +31,11 @@ local localPlayer = playersService.LocalPlayer
 local libraryFolder = replicatedStorage:WaitForChild("Library")
 local clientFolder = libraryFolder:WaitForChild("Client")
 local utilFolder = libraryFolder:FindFirstChild("Util")
+local directoryFolder = libraryFolder:FindFirstChild("Directory")
 local networkFolder = replicatedStorage:FindFirstChild("Network")
 
 local DIAG_FOLDER = "VRT"
-local DIAG_PATH = "VRT/VRT_Diag4.txt"
+local DIAG_PATH = "VRT/VRT_Diag5.txt"
 
 pcall(function()
 	if not isfolder(DIAG_FOLDER) then
@@ -147,59 +137,6 @@ local function getRoot()
 	return character and character:FindFirstChild("HumanoidRootPart") or nil
 end
 
-local function tryCall(label, fn, ...)
-	local ok, result = pcall(fn, ...)
-	w(("[%s] ok=%s | result=%s"):format(label, tostring(ok), serialize(result)))
-	return ok, result
-end
-
--- -----------------------------------------------------
--- PRECISE TELEPORT
--- -----------------------------------------------------
-local function teleportExact(targetPos, label)
-	local root = getRoot()
-	if not root then return false, "no root" end
-	if not targetPos then return false, "no target" end
-
-	local before = root.Position
-	local humanoid = localPlayer.Character and localPlayer.Character:FindFirstChildOfClass("Humanoid")
-
-	for attempt = 1, CONFIG.TELEPORT_RETRY do
-		-- Method 1: CFrame trực tiếp
-		root.CFrame = CFrame.new(targetPos)
-
-		-- Method 2: PivotTo (nếu có)
-		if localPlayer.Character then
-			pcall(function()
-				localPlayer.Character:PivotTo(CFrame.new(targetPos))
-			end)
-		end
-
-		-- Method 3: Humanoid MoveTo
-		if humanoid then
-			pcall(function() humanoid:MoveTo(targetPos) end)
-		end
-
-		task.wait(0.3)
-
-		local after = root.Position
-		local dist = (after - targetPos).Magnitude
-		w(("    [%s] attempt %d: %.1f,%.1f,%.1f -> %.1f,%.1f,%.1f | dist=%.1f"):format(
-			label, attempt,
-			before.X, before.Y, before.Z,
-			after.X, after.Y, after.Z,
-			dist
-		))
-
-		if dist < CONFIG.TELEPORT_VERIFY_DIST then
-			return true, dist
-		end
-		task.wait(0.2)
-	end
-
-	return false, "verify failed"
-end
-
 -- -----------------------------------------------------
 -- HEADER
 -- -----------------------------------------------------
@@ -212,20 +149,11 @@ pcall(function()
 	local a, b = identifyexecutor()
 	w("Executor:", tostring(a), tostring(b))
 end)
-w("")
-w("CONFIG:")
-for k, v in pairs(CONFIG) do
-	if typeof(v) ~= "table" then
-		w(("  %s = %s"):format(tostring(k), tostring(v)))
-	end
-end
 
 local root = getRoot()
 if root then
 	local p = root.Position
 	w(("Position: %.1f, %.1f, %.1f"):format(p.X, p.Y, p.Z))
-else
-	w("Position: no character")
 end
 
 -- -----------------------------------------------------
@@ -240,9 +168,12 @@ local Modules = {
 	FruitCmds = safeRequire(clientFolder:FindFirstChild("FruitCmds")),
 	CustomEggsCmds = safeRequire(clientFolder:FindFirstChild("CustomEggsCmds")),
 	EggCmds = safeRequire(clientFolder:FindFirstChild("EggCmds")),
+	DiamondMountainCmds = safeRequire(clientFolder:FindFirstChild("DiamondMountainCmds")),
 	DiamondMountainMerchant = safeRequire(utilFolder and utilFolder:FindFirstChild("DiamondMountainMerchant")),
 	MerchantUtil = safeRequire(utilFolder and utilFolder:FindFirstChild("MerchantUtil")),
 	TravelingMerchantUtil = safeRequire(utilFolder and utilFolder:FindFirstChild("TravelingMerchantUtil")),
+	MerchantsDir = safeRequire(directoryFolder and directoryFolder:FindFirstChild("Merchants")),
+	ZoneFlagsDir = safeRequire(directoryFolder and directoryFolder:FindFirstChild("ZoneFlags")),
 }
 
 local function invoke(name, ...)
@@ -277,44 +208,6 @@ local function getSave()
 	return nil
 end
 
-local function getInventoryFlagEntries()
-	local entries = {}
-	local save = getSave()
-	if not save or typeof(save.Inventory) ~= "table" then return entries end
-	for bucketName, bucket in pairs(save.Inventory) do
-		if typeof(bucket) == "table" then
-			for uid, entry in pairs(bucket) do
-				if typeof(entry) == "table" and typeof(entry.id) == "string" then
-					if entry.id:lower():find("flag", 1, true) and (entry._am or 0) > 0 then
-						table.insert(entries, {
-							uid = uid, id = entry.id, amount = entry._am,
-							bucket = bucketName,
-						})
-					end
-				end
-			end
-		end
-	end
-	return entries
-end
-
-local function getAllFruits()
-	local fruits = {}
-	local save = getSave()
-	if not save or typeof(save.Inventory) ~= "table" or typeof(save.Inventory.Fruit) ~= "table" then
-		return fruits
-	end
-	for uid, entry in pairs(save.Inventory.Fruit) do
-		if typeof(entry) == "table" and (entry._am or 0) > 0 then
-			table.insert(fruits, {
-				uid = uid, id = entry.id, amount = entry._am,
-				shiny = entry.sh == true,
-			})
-		end
-	end
-	return fruits
-end
-
 -- -----------------------------------------------------
 -- INSTANCE INFO
 -- -----------------------------------------------------
@@ -322,564 +215,779 @@ sep("INSTANCE INFO")
 local instanceInfo = getInstanceInfo()
 w("GetCurrentInstanceInfo():", serialize(instanceInfo))
 if Modules.MapCmds and Modules.MapCmds.GetCurrentZone then
-	tryCall("GetCurrentZone", Modules.MapCmds.GetCurrentZone)
+	local ok, zone = pcall(Modules.MapCmds.GetCurrentZone)
+	w(("GetCurrentZone(): ok=%s value=%s"):format(tostring(ok), serialize(zone)))
 end
 
 flushSafe()
 
 -- =====================================================
--- FLAG
+-- FLAG DEEP DIVE
 -- =====================================================
-sep("FLAG 1 — Module Signatures")
+sep("FLAG 1 — SpatialQuery 11 ARG TYPES")
 local flagCmds = Modules.FlexibleFlagCmds
 local zoneFlagCmds = Modules.ZoneFlagCmds
-w("FlexibleFlagCmds:", typeof(flagCmds))
-w("ZoneFlagCmds:", typeof(zoneFlagCmds))
 
-if typeof(flagCmds) == "table" then
-	for _, name in ipairs({ "Consume", "ActivateFlag", "DeactivateFlag", "GetActiveFlag", "GetMaxPlace", "GetMaxPlaceAutomaticContext", "SpatialQuery", "HasActiveFlag", "PlayerHasActiveFlag" }) do
-		local fn = flagCmds[name]
-		if typeof(fn) == "function" then
-			local info = debug.getinfo(fn)
-			w(("  FlexibleFlagCmds.%s | params=%d vararg=%s nups=%d"):format(
-				name, info and info.numparams or 0,
-				tostring(info and info.is_vararg), info and info.nups or 0
-			))
-		else
-			w(("  FlexibleFlagCmds.%s = %s"):format(name, typeof(fn)))
-		end
-	end
-end
+if typeof(flagCmds) == "table" and typeof(flagCmds.SpatialQuery) == "function" and root then
+	local pos = root.Position
 
-if typeof(zoneFlagCmds) == "table" then
-	for _, name in ipairs({ "Consume", "ActivateFlag", "DeactivateFlag", "GetActiveFlag", "GetActiveFlags", "GetMaxPlace", "HasActiveFlag", "PlayerHasActiveFlag" }) do
-		local fn = zoneFlagCmds[name]
-		if typeof(fn) == "function" then
-			local info = debug.getinfo(fn)
-			w(("  ZoneFlagCmds.%s | params=%d vararg=%s nups=%d"):format(
-				name, info and info.numparams or 0,
-				tostring(info and info.is_vararg), info and info.nups or 0
-			))
-		else
-			w(("  ZoneFlagCmds.%s = %s"):format(name, typeof(fn)))
-		end
-	end
-end
+	local argTests = {
+		{ label = "no-arg", fn = function() return flagCmds.SpatialQuery() end },
+		{ label = "nil", fn = function() return flagCmds.SpatialQuery(nil) end },
+		{ label = "Vector3", fn = function() return flagCmds.SpatialQuery(pos) end },
+		{ label = "CFrame", fn = function() return flagCmds.SpatialQuery(CFrame.new(pos)) end },
+		{ label = "Part", fn = function() return flagCmds.SpatialQuery(root) end },
+		{ label = "table.Position", fn = function() return flagCmds.SpatialQuery({ Position = pos }) end },
+		{ label = "table.CFrame", fn = function() return flagCmds.SpatialQuery({ CFrame = CFrame.new(pos) }) end },
+		{ label = "instanceInfo", fn = function() return flagCmds.SpatialQuery(instanceInfo) end },
+		{ label = "instanceId", fn = function() return flagCmds.SpatialQuery(instanceInfo and instanceInfo.InstanceId) end },
+		{ label = "areaId", fn = function() return flagCmds.SpatialQuery(instanceInfo and instanceInfo.AreaId) end },
+		{ label = "zoneNumber", fn = function() return flagCmds.SpatialQuery(instanceInfo and instanceInfo.ZoneNumber) end },
+	}
 
-sep("FLAG 2 — Current State")
-if typeof(flagCmds) == "table" then
-	if flagCmds.GetActiveFlag then
-		tryCall("FlexibleFlagCmds.GetActiveFlag()", flagCmds.GetActiveFlag)
+	for _, test in ipairs(argTests) do
+		local ok, result = pcall(test.fn)
+		w(("[%s] ok=%s result=%s"):format(test.label, tostring(ok), serialize(result)))
+		task.wait(0.1)
 	end
-	if flagCmds.HasActiveFlag then
-		tryCall("FlexibleFlagCmds.HasActiveFlag('Coins Flag')", flagCmds.HasActiveFlag, "Coins Flag")
-	end
-	if flagCmds.GetMaxPlaceAutomaticContext and root then
-		tryCall("GetMaxPlaceAutomaticContext(pos)", flagCmds.GetMaxPlaceAutomaticContext, root.Position)
-	end
-	if flagCmds.SpatialQuery and root then
-		tryCall("SpatialQuery(pos)", flagCmds.SpatialQuery, root.Position)
-	end
-end
-if typeof(zoneFlagCmds) == "table" then
-	if zoneFlagCmds.GetActiveFlag then
-		tryCall("ZoneFlagCmds.GetActiveFlag()", zoneFlagCmds.GetActiveFlag)
-	end
-	if zoneFlagCmds.GetActiveFlags then
-		tryCall("ZoneFlagCmds.GetActiveFlags()", zoneFlagCmds.GetActiveFlags)
-	end
-end
-
-sep("FLAG 3 — Inventory")
-local flagEntries = getInventoryFlagEntries()
-w(("Found %d flag entries"):format(#flagEntries))
-for _, e in ipairs(flagEntries) do
-	w(("  [%s] %q am=%d"):format(e.bucket, e.id, e.amount))
+else
+	w("SpatialQuery not available")
 end
 
 flushSafe()
 
-sep("FLAG 4 — 9 SIGNATURE PROBE")
-local workingSignature = nil
-local signatureResults = {}
+sep("FLAG 2 — SpatialQuery SCAN 100+ POSITIONS")
+local workingPositions = {}
 
-if CONFIG.TEST_FLAG and CONFIG.TEST_FLAG_ALL_SIGNATURES then
-	local flagId = CONFIG.FLAG_SIGNATURE_PROBE
-	w(("Probe flag: %q amount=1"):format(flagId))
+if typeof(flagCmds) == "table" and typeof(flagCmds.SpatialQuery) == "function" and root then
+	local positions = {}
+
+	-- Current
+	table.insert(positions, { pos = root.Position, label = "current" })
+
+	-- Ground raycast
+	local rayParams = RaycastParams.new()
+	rayParams.FilterType = Enum.RaycastFilterType.Exclude
+	rayParams.FilterDescendantsInstances = { localPlayer.Character }
+	local rayResult = workspace:Raycast(root.Position, Vector3.new(0, -100, 0), rayParams)
+	if rayResult then
+		table.insert(positions, { pos = rayResult.Position, label = "ground" })
+	end
+
+	-- Grid ±60 (step 15) = 81 positions
+	for dx = -60, 60, 15 do
+		for dz = -60, 60, 15 do
+			table.insert(positions, {
+				pos = root.Position + Vector3.new(dx, 0, dz),
+				label = ("grid(%d,%d)"):format(dx, dz),
+			})
+		end
+	end
+
+	-- Camp parts
+	local things = workspace:FindFirstChild("__THINGS")
+	local container = things and things:FindFirstChild("__INSTANCE_CONTAINER")
+	local active = container and container:FindFirstChild("Active")
+	local mountain = active and active:FindFirstChild("DiamondMountain")
+	local camps = mountain and mountain:FindFirstChild("Camps")
+	if camps then
+		for _, camp in ipairs(camps:GetChildren()) do
+			for _, partName in ipairs({ "Spawn", "Landing", "Merchant", "WallFront" }) do
+				local part = camp:FindFirstChild(partName)
+				if part and part:IsA("BasePart") then
+					table.insert(positions, {
+						pos = part.Position,
+						label = ("camp%s-%s"):format(camp.Name, partName),
+					})
+				end
+			end
+		end
+	end
+
+	-- Break zones
+	local breakZones = mountain and mountain:FindFirstChild("BREAK_ZONES")
+	if breakZones then
+		for _, zone in ipairs(breakZones:GetChildren()) do
+			if zone:IsA("BasePart") then
+				table.insert(positions, {
+					pos = zone.Position,
+					label = "zone-" .. zone.Name,
+				})
+			end
+		end
+	end
+
+	-- Breakable spawns
+	local instances = things and things:FindFirstChild("Instances")
+	local dm = instances and instances:FindFirstChild("DiamondMountain")
+	local breakableSpawns = dm and dm:FindFirstChild("BREAKABLE_SPAWNS")
+	if breakableSpawns then
+		for _, spawn in ipairs(breakableSpawns:GetChildren()) do
+			if spawn:IsA("BasePart") then
+				table.insert(positions, {
+					pos = spawn.Position,
+					label = "breakable-" .. spawn.Name,
+				})
+			end
+		end
+	end
+
+	-- Teleports
+	local teleports = dm and dm:FindFirstChild("Teleports")
+	if teleports then
+		for _, tp in ipairs(teleports:GetChildren()) do
+			if tp:IsA("BasePart") then
+				table.insert(positions, {
+					pos = tp.Position,
+					label = "tp-" .. tp.Name .. "-" .. tostring(tp:GetAttribute("Id") or "?"),
+				})
+			end
+		end
+	end
+
+	w(("Scanning %d positions..."):format(#positions))
 	w("")
 
+	for _, entry in ipairs(positions) do
+		local ok, ctx = pcall(flagCmds.SpatialQuery, entry.pos)
+		if ok and ctx ~= nil then
+			table.insert(workingPositions, {
+				pos = entry.pos,
+				label = entry.label,
+				ctx = ctx,
+			})
+			w(("[VALID] %s pos=%.1f,%.1f,%.1f ctx=%s"):format(
+				entry.label,
+				entry.pos.X, entry.pos.Y, entry.pos.Z,
+				serialize(ctx)
+			))
+		end
+	end
+
+	w("")
+	w(("Total valid positions: %d / %d"):format(#workingPositions, #positions))
+else
+	w("SpatialQuery not available")
+end
+
+flushSafe()
+
+sep("FLAG 3 — CONSUME 5 SIGNATURES (with valid spatial)")
+if CONFIG.TEST_FLAG_CONSUME and #workingPositions > 0 then
+	local target = workingPositions[1]
+	w(("Using position: %s | ctx=%s"):format(target.label, serialize(target.ctx)))
+	w("")
+
+	-- Save original position
+	local originalCFrame = root.CFrame
+	root.CFrame = CFrame.new(target.pos)
+	task.wait(0.4)
+
+	local flagId = CONFIG.FLAG_TO_TEST
 	local info = instanceInfo
-	local instanceId = info and info.InstanceId
-	local areaId = info and info.AreaId
-	local zoneNumber = info and info.ZoneNumber
-	local pos = root and root.Position
-
-	w("Context:")
-	w("  instanceId:", tostring(instanceId))
-	w("  areaId:", tostring(areaId))
-	w("  zoneNumber:", tostring(zoneNumber))
-	w("  pos:", serialize(pos))
-	w("")
 
 	local function test(label, fn, ...)
 		local ok, result = pcall(fn, ...)
-		local success = ok and result ~= false
-		table.insert(signatureResults, { label = label, ok = ok, result = result, success = success })
 		w(("[%s] ok=%s result=%s"):format(label, tostring(ok), serialize(result)))
-		task.wait(CONFIG.WAIT_BETWEEN_TESTS)
-		if success and not workingSignature then
-			workingSignature = label
-		end
-		return success
+		task.wait(CONFIG.WAIT)
 	end
 
 	if typeof(flagCmds) == "table" and flagCmds.Consume then
-		if instanceId then
-			test("1.flex-instanceId", flagCmds.Consume, flagId, 1, instanceId)
-		end
-		if areaId then
-			test("2.flex-areaId", flagCmds.Consume, flagId, 1, areaId)
-		end
-		if info then
-			test("3.flex-info", flagCmds.Consume, flagId, 1, info)
-		end
-		if zoneNumber then
-			test("4.flex-zone", flagCmds.Consume, flagId, 1, zoneNumber)
-		end
-		if pos then
-			test("4b.flex-pos", flagCmds.Consume, flagId, 1, pos)
-		end
-		test("4c.flex-2args", flagCmds.Consume, flagId, 1)
+		test("1.flex-flag,amt,ctx", flagCmds.Consume, flagId, 1, target.ctx)
+		test("2.flex-flag,amt,pos", flagCmds.Consume, flagId, 1, target.pos)
+		test("3.flex-flag,amt,info", flagCmds.Consume, flagId, 1, info)
+		test("4.flex-flag,amt", flagCmds.Consume, flagId, 1)
+		test("5.flex-flag", flagCmds.Consume, flagId)
 	end
 
 	if typeof(zoneFlagCmds) == "table" and zoneFlagCmds.Consume then
-		if instanceId then
-			test("5.zone-instanceId", zoneFlagCmds.Consume, flagId, 1, instanceId)
-		end
-		if areaId then
-			test("6.zone-areaId", zoneFlagCmds.Consume, flagId, 1, areaId)
-		end
-		if info then
-			test("7.zone-info", zoneFlagCmds.Consume, flagId, 1, info)
-		end
-		test("7b.zone-2args", zoneFlagCmds.Consume, flagId, 1)
+		test("6.zone-flag,amt,ctx", zoneFlagCmds.Consume, flagId, 1, target.ctx)
+		test("7.zone-flag,amt,pos", zoneFlagCmds.Consume, flagId, 1, target.pos)
+		test("8.zone-flag,amt,info", zoneFlagCmds.Consume, flagId, 1, info)
+		test("9.zone-flag,amt", zoneFlagCmds.Consume, flagId, 1)
 	end
 
-	if instanceId then
-		test("8.remote-flex-instanceId", function()
-			return invoke("FlexibleFlags_Consume", flagId, 1, instanceId)
-		end)
-		test("9.remote-flags-instanceId", function()
-			return invoke("Flags: Consume", flagId, 1, instanceId)
-		end)
-	end
-	test("10.remote-flex-2args", function()
-		return invoke("FlexibleFlags_Consume", flagId, 1)
-	end)
-	test("11.remote-flags-2args", function()
-		return invoke("Flags: Consume", flagId, 1)
-	end)
-
-	w("")
-	w("-- Signature summary:")
-	local successCount = 0
-	for _, r in ipairs(signatureResults) do
-		w(("  %-30s %s"):format(r.label, r.success and "SUCCESS" or "FAIL"))
-		if r.success then successCount += 1 end
-	end
-	w(("  Total success: %d/%d"):format(successCount, #signatureResults))
-	w(("  First working: %s"):format(tostring(workingSignature)))
+	pcall(function() root.CFrame = originalCFrame end)
+elseif CONFIG.TEST_FLAG_CONSUME then
+	w("(no valid positions — skip consume test)")
 end
 
 flushSafe()
 
-sep("FLAG 5 — ALL FLAGS × WORKING SIGNATURE")
-if CONFIG.TEST_FLAG and CONFIG.TEST_FLAG_ALL_TYPES and workingSignature then
-	w(("Using signature: %s"):format(workingSignature))
-	w("")
+sep("FLAG 4 — ACTIVATE 3 SIGNATURES")
+if CONFIG.TEST_FLAG_ACTIVATE and typeof(flagCmds) == "table" and flagCmds.ActivateFlag then
+	local flagId = CONFIG.FLAG_TO_TEST
+	local ctx = #workingPositions > 0 and workingPositions[1].ctx or nil
+	local pos = #workingPositions > 0 and workingPositions[1].pos or (root and root.Position)
 
-	local info = instanceInfo
-	local instanceId = info and info.InstanceId
-	local areaId = info and info.AreaId
-	local zoneNumber = info and info.ZoneNumber
-	local pos = root and root.Position
-
-	local function runSignature(flagId, amount)
-		if workingSignature == "1.flex-instanceId" then
-			return pcall(flagCmds.Consume, flagId, amount, instanceId)
-		elseif workingSignature == "2.flex-areaId" then
-			return pcall(flagCmds.Consume, flagId, amount, areaId)
-		elseif workingSignature == "3.flex-info" then
-			return pcall(flagCmds.Consume, flagId, amount, info)
-		elseif workingSignature == "4.flex-zone" then
-			return pcall(flagCmds.Consume, flagId, amount, zoneNumber)
-		elseif workingSignature == "4b.flex-pos" then
-			return pcall(flagCmds.Consume, flagId, amount, pos)
-		elseif workingSignature == "4c.flex-2args" then
-			return pcall(flagCmds.Consume, flagId, amount)
-		elseif workingSignature == "5.zone-instanceId" then
-			return pcall(zoneFlagCmds.Consume, flagId, amount, instanceId)
-		elseif workingSignature == "6.zone-areaId" then
-			return pcall(zoneFlagCmds.Consume, flagId, amount, areaId)
-		elseif workingSignature == "7.zone-info" then
-			return pcall(zoneFlagCmds.Consume, flagId, amount, info)
-		elseif workingSignature == "7b.zone-2args" then
-			return pcall(zoneFlagCmds.Consume, flagId, amount)
-		elseif workingSignature == "8.remote-flex-instanceId" then
-			return invoke("FlexibleFlags_Consume", flagId, amount, instanceId)
-		elseif workingSignature == "9.remote-flags-instanceId" then
-			return invoke("Flags: Consume", flagId, amount, instanceId)
-		elseif workingSignature == "10.remote-flex-2args" then
-			return invoke("FlexibleFlags_Consume", flagId, amount)
-		elseif workingSignature == "11.remote-flags-2args" then
-			return invoke("Flags: Consume", flagId, amount)
-		end
-		return false, "unknown signature"
+	if pos and root then
+		local original = root.CFrame
+		root.CFrame = CFrame.new(pos)
+		task.wait(0.4)
 	end
 
-	for _, e in ipairs(flagEntries) do
-		local ok, result = runSignature(e.id, 1)
-		w(("[%s] ok=%s result=%s"):format(e.id, tostring(ok), serialize(result)))
-		task.wait(CONFIG.WAIT_BETWEEN_TESTS)
+	local function test(label, fn, ...)
+		local ok, result = pcall(fn, ...)
+		w(("[%s] ok=%s result=%s"):format(label, tostring(ok), serialize(result)))
+		task.wait(CONFIG.WAIT)
+	end
+
+	test("1.flex-activate(flag,ctx)", flagCmds.ActivateFlag, flagId, ctx)
+	test("2.flex-activate(flag,pos)", flagCmds.ActivateFlag, flagId, pos)
+	test("3.flex-activate(flag)", flagCmds.ActivateFlag, flagId)
+
+	if typeof(zoneFlagCmds) == "table" and zoneFlagCmds.ActivateFlag then
+		test("4.zone-activate(flag,ctx)", zoneFlagCmds.ActivateFlag, flagId, ctx)
+		test("5.zone-activate(flag,pos)", zoneFlagCmds.ActivateFlag, flagId, pos)
+	end
+
+	-- Check active
+	if flagCmds.GetActiveFlag then
+		test("GetActiveFlag after", flagCmds.GetActiveFlag)
+	end
+	if zoneFlagCmds.GetActiveFlags then
+		test("ZoneFlagCmds.GetActiveFlags after", zoneFlagCmds.GetActiveFlags)
 	end
 end
 
 flushSafe()
 
--- =====================================================
--- FRUIT
--- =====================================================
-sep("FRUIT 1 — Module Signatures")
-local fruitCmds = Modules.FruitCmds
-w("FruitCmds:", typeof(fruitCmds))
-if typeof(fruitCmds) == "table" then
-	for _, name in ipairs({ "Consume", "GetActiveFruits", "GetMaxConsume", "ComputeFruitQueueLimit", "ComputeFruitPowerLimit", "ComputeDuration", "GetPower" }) do
-		local fn = fruitCmds[name]
-		if typeof(fn) == "function" then
-			local info = debug.getinfo(fn)
-			w(("  FruitCmds.%s | params=%d vararg=%s nups=%d"):format(
-				name, info and info.numparams or 0,
-				tostring(info and info.is_vararg), info and info.nups or 0
+sep("FLAG 5 — __THINGS.Flags + Directory.ZoneFlags")
+local things = workspace:FindFirstChild("__THINGS")
+local flagsFolder = things and things:FindFirstChild("Flags")
+if flagsFolder then
+	w(("__THINGS.Flags children: %d"):format(#flagsFolder:GetChildren()))
+	for _, child in ipairs(flagsFolder:GetChildren()) do
+		local extra = ""
+		if child:IsA("BasePart") then
+			extra = (" pos=%.1f,%.1f,%.1f"):format(
+				child.Position.X, child.Position.Y, child.Position.Z
+			)
+		end
+		w(("  %s (%s)%s"):format(child.Name, child.ClassName, extra))
+	end
+else
+	w("__THINGS.Flags NOT FOUND")
+end
+
+w("")
+w("-- Directory.ZoneFlags:")
+local zfDir = Modules.ZoneFlagsDir
+if typeof(zfDir) == "table" then
+	for k, v in pairs(zfDir) do
+		if typeof(v) == "table" then
+			w(("  [%s] _id=%s Name=%s Duration=%s"):format(
+				tostring(k), tostring(v._id), tostring(v.Name), tostring(v.Duration)
 			))
-		else
-			w(("  FruitCmds.%s = %s"):format(name, typeof(fn)))
 		end
 	end
 end
 
-sep("FRUIT 2 — Queue / Power / Active")
-if typeof(fruitCmds) == "table" then
-	if fruitCmds.ComputeFruitQueueLimit then
-		tryCall("ComputeFruitQueueLimit", fruitCmds.ComputeFruitQueueLimit)
+flushSafe()
+
+-- =====================================================
+-- FRUIT DEEP VERIFY
+-- =====================================================
+sep("FRUIT 1 — INVENTORY BEFORE")
+local fruitCmds = Modules.FruitCmds
+local save = getSave()
+
+local function getFruitSnapshot()
+	local snap = {}
+	if save and typeof(save.Inventory) == "table" and typeof(save.Inventory.Fruit) == "table" then
+		for uid, entry in pairs(save.Inventory.Fruit) do
+			if typeof(entry) == "table" then
+				local maxConsume = -1
+				if fruitCmds and fruitCmds.GetMaxConsume then
+					local ok, value = pcall(fruitCmds.GetMaxConsume, uid)
+					if ok and typeof(value) == "number" then maxConsume = value end
+				end
+				snap[uid] = {
+					id = entry.id,
+					shiny = entry.sh == true,
+					amount = entry._am or 0,
+					maxConsume = maxConsume,
+				}
+			end
+		end
 	end
-	if fruitCmds.ComputeFruitPowerLimit then
-		tryCall("ComputeFruitPowerLimit", fruitCmds.ComputeFruitPowerLimit)
-	end
-	if fruitCmds.GetActiveFruits then
+	return snap
+end
+
+local function getActiveSnapshot()
+	local snap = {}
+	if fruitCmds and fruitCmds.GetActiveFruits then
 		local ok, active = pcall(fruitCmds.GetActiveFruits)
-		w(("GetActiveFruits ok=%s type=%s"):format(tostring(ok), typeof(active)))
 		if ok and typeof(active) == "table" then
 			for fruitId, stacks in pairs(active) do
 				if typeof(stacks) == "table" then
-					local normal = stacks.Normal and #stacks.Normal or 0
-					local shiny = stacks.Shiny and #stacks.Shiny or 0
-					w(("  %s | Normal=%d Shiny=%d"):format(tostring(fruitId), normal, shiny))
+					snap[fruitId] = {
+						Normal = stacks.Normal and #stacks.Normal or 0,
+						Shiny = stacks.Shiny and #stacks.Shiny or 0,
+					}
 				end
 			end
 		end
 	end
+	return snap
 end
 
-sep("FRUIT 3 — Inventory + GetMaxConsume")
-local allFruits = getAllFruits()
-w(("Found %d fruit entries"):format(#allFruits))
-for _, f in ipairs(allFruits) do
-	local maxConsume = "n/a"
-	if fruitCmds and fruitCmds.GetMaxConsume then
-		local ok, value = pcall(fruitCmds.GetMaxConsume, f.uid)
-		maxConsume = ok and tostring(value) or ("err: " .. tostring(value))
-	end
-	w(("  uid=%s id=%q shiny=%s am=%d | GetMaxConsume=%s"):format(
-		tostring(f.uid), tostring(f.id), tostring(f.shiny),
-		f.amount, maxConsume
+local fruitBefore = getFruitSnapshot()
+local activeBefore = getActiveSnapshot()
+
+w("Inventory:")
+for uid, data in pairs(fruitBefore) do
+	w(("  %s %s am=%d maxConsume=%d"):format(
+		data.id, data.shiny and "Shiny" or "Normal", data.amount, data.maxConsume
 	))
+end
+w("")
+w("Active:")
+for fruitId, data in pairs(activeBefore) do
+	w(("  %s | Normal=%d Shiny=%d"):format(fruitId, data.Normal, data.Shiny))
 end
 
 flushSafe()
 
-sep("FRUIT 4 — 4 SIGNATURE PROBE")
-local workingFruitSignature = nil
-local fruitSignatureResults = {}
-
-if CONFIG.TEST_FRUIT and CONFIG.TEST_FRUIT_ALL_SIGNATURES and #allFruits > 0 then
-	local probe = allFruits[1]
-	w(("Probe fruit: %q (%s) amount=%d"):format(
-		tostring(probe.id), probe.shiny and "Shiny" or "Normal", CONFIG.FRUIT_AMOUNT
-	))
-	w("")
-
-	local function testFruit(label, fn, ...)
-		local ok, result = pcall(fn, ...)
-		local success = ok
-		table.insert(fruitSignatureResults, { label = label, ok = ok, result = result, success = success })
-		w(("[%s] ok=%s result=%s"):format(label, tostring(ok), serialize(result)))
-		task.wait(CONFIG.WAIT_BETWEEN_TESTS)
-		if success and not workingFruitSignature then
-			workingFruitSignature = label
+sep("FRUIT 2 — CONSUME 4 SIGNATURES WITH VERIFY")
+if CONFIG.TEST_FRUIT and fruitCmds and fruitCmds.Consume then
+	-- Pick first fruit
+	local targetUid, targetData
+	for uid, data in pairs(fruitBefore) do
+		if data.amount > 0 then
+			targetUid, targetData = uid, data
+			break
 		end
-		return success
 	end
 
-	if fruitCmds and fruitCmds.Consume then
-		testFruit("1.uid+amount", fruitCmds.Consume, probe.uid, CONFIG.FRUIT_AMOUNT)
-		testFruit("2.entry+amount", fruitCmds.Consume, {
-			id = probe.id, sh = probe.shiny, _am = probe.amount,
-		}, CONFIG.FRUIT_AMOUNT)
-		testFruit("3.colon(uid)", function()
-			return fruitCmds:Consume(probe.uid)
-		end)
-		testFruit("4.colon(uid,amount)", function()
-			return fruitCmds:Consume(probe.uid, CONFIG.FRUIT_AMOUNT)
-		end)
-	end
-
-	w("")
-	w("-- Fruit signature summary:")
-	for _, r in ipairs(fruitSignatureResults) do
-		w(("  %-30s %s"):format(r.label, r.success and "SUCCESS" or "FAIL"))
-	end
-	w(("  First working: %s"):format(tostring(workingFruitSignature)))
-end
-
-flushSafe()
-
-sep("FRUIT 5 — ALL FRUITS × WORKING SIGNATURE")
-if CONFIG.TEST_FRUIT and CONFIG.TEST_FRUIT_ALL_TYPES and workingFruitSignature then
-	w(("Using signature: %s"):format(workingFruitSignature))
-	w("")
-
-	local function runFruitSignature(probe, amount)
-		if workingFruitSignature == "1.uid+amount" then
-			return pcall(fruitCmds.Consume, probe.uid, amount)
-		elseif workingFruitSignature == "2.entry+amount" then
-			return pcall(fruitCmds.Consume, {
-				id = probe.id, sh = probe.shiny, _am = probe.amount,
-			}, amount)
-		elseif workingFruitSignature == "3.colon(uid)" then
-			return pcall(function() return fruitCmds:Consume(probe.uid) end)
-		elseif workingFruitSignature == "4.colon(uid,amount)" then
-			return pcall(function() return fruitCmds:Consume(probe.uid, amount) end)
-		end
-		return false, "unknown"
-	end
-
-	for _, f in ipairs(allFruits) do
-		local ok, result = runFruitSignature(f, CONFIG.FRUIT_AMOUNT)
-		w(("[%s %s] ok=%s result=%s"):format(
-			f.id, f.shiny and "Shiny" or "Normal", tostring(ok), serialize(result)
+	if targetUid then
+		w(("Test fruit: %s %s | uid=%s | am=%d"):format(
+			targetData.id, targetData.shiny and "Shiny" or "Normal",
+			targetUid, targetData.amount
 		))
-		task.wait(CONFIG.WAIT_BETWEEN_TESTS)
-	end
-end
-
-flushSafe()
-
--- =====================================================
--- CUSTOM EGG
--- =====================================================
-sep("EGG 1 — CustomEggsCmds.All()")
-local customCmds = Modules.CustomEggsCmds
-w("CustomEggsCmds:", typeof(customCmds))
-
-local hatchableEggs = {}
-if typeof(customCmds) == "table" and customCmds.All then
-	local ok, list = pcall(customCmds.All)
-	w(("All() ok=%s type=%s"):format(tostring(ok), typeof(list)))
-	if ok and typeof(list) == "table" then
-		local total, hatchable = 0, 0
-		local rootPos = root and root.Position
-		for uid, egg in pairs(list) do
-			total += 1
-			if typeof(egg) == "table" then
-				local isHatch = egg._hatchable == true
-				local name = egg._id or egg.name or uid
-				local pos = egg._position
-				local dist = "n/a"
-				if pos and rootPos then
-					dist = ("%.0f"):format((pos - rootPos).Magnitude)
-				end
-				if isHatch then
-					hatchable += 1
-					table.insert(hatchableEggs, {
-						uid = uid, name = name, pos = pos,
-						dist = dist, distNum = pos and rootPos and (pos - rootPos).Magnitude or math.huge,
-					})
-					w(("  [HATCH] %s | %s | dist=%s | pos=%s"):format(
-						tostring(name), tostring(uid), dist, serialize(pos)
-					))
-				else
-					w(("  [no]    %s | %s | dist=%s"):format(
-						tostring(name), tostring(uid), dist
-					))
-				end
-			end
-		end
-		w(("  total=%d hatchable=%d"):format(total, hatchable))
-	end
-end
-
-sep("EGG 2 — GetMaxHatch")
-local eggCmds = Modules.EggCmds
-local maxHatch = 1
-if eggCmds and eggCmds.GetMaxHatch then
-	local ok, value = tryCall("GetMaxHatch()", eggCmds.GetMaxHatch)
-	if ok and typeof(value) == "number" and value > 0 then
-		maxHatch = value
-	end
-end
-w("Max hatch:", maxHatch)
-
-flushSafe()
-
-sep("EGG 3 — HATCH TEST ALL EGGS")
-if CONFIG.TEST_EGG and #hatchableEggs > 0 then
-	table.sort(hatchableEggs, function(a, b)
-		return a.distNum < b.distNum
-	end)
-
-	for _, egg in ipairs(hatchableEggs) do
 		w("")
-		w(("=== Egg: %s | %s | dist=%s"):format(egg.name, egg.uid, egg.dist))
 
-		if egg.pos and root then
-			local ok, dist = teleportExact(egg.pos, "egg-" .. egg.name)
-			if ok then
-				w(("  Teleport OK (dist=%.1f)"):format(dist))
-			else
-				w(("  Teleport FAIL: %s"):format(tostring(dist)))
-			end
+		local function verifyConsume(label, fn, ...)
+			local before = getFruitSnapshot()
+			local beforeActive = getActiveSnapshot()
+			local beforeAmt = before[targetUid] and before[targetUid].amount or 0
+			local beforeMax = before[targetUid] and before[targetUid].maxConsume or -1
+			local beforeActiveAmt = beforeActive[targetData.id]
+				and ((targetData.shiny and beforeActive[targetData.id].Shiny or beforeActive[targetData.id].Normal))
+				or 0
+
+			local ok, result = pcall(fn, ...)
+			task.wait(0.6)
+
+			local after = getFruitSnapshot()
+			local afterActive = getActiveSnapshot()
+			local afterAmt = after[targetUid] and after[targetUid].amount or 0
+			local afterMax = after[targetUid] and after[targetUid].maxConsume or -1
+			local afterActiveAmt = afterActive[targetData.id]
+				and ((targetData.shiny and afterActive[targetData.id].Shiny or afterActive[targetData.id].Normal))
+				or 0
+
+			local inventoryChanged = afterAmt ~= beforeAmt
+			local maxChanged = afterMax ~= beforeMax
+			local activeChanged = afterActiveAmt ~= beforeActiveAmt
+
+			w(("[%s] ok=%s result=%s"):format(label, tostring(ok), serialize(result)))
+			w(("  inventory: %d -> %d (%s)"):format(
+				beforeAmt, afterAmt, inventoryChanged and "CHANGED" or "same"
+			))
+			w(("  maxConsume: %d -> %d (%s)"):format(
+				beforeMax, afterMax, maxChanged and "CHANGED" or "same"
+			))
+			w(("  active: %d -> %d (%s)"):format(
+				beforeActiveAmt, afterActiveAmt, activeChanged and "CHANGED" or "same"
+			))
+			w("")
+			task.wait(CONFIG.WAIT)
 		end
 
-		if CONFIG.TEST_EGG_BATCH then
-			local batchMax = math.min(CONFIG.EGG_BATCH_MAX, maxHatch)
-			w(("  -- Batch: CustomEggs_Hatch(%s, %d)"):format(egg.uid, batchMax))
-			local ok, result = invoke("CustomEggs_Hatch", egg.uid, batchMax)
-			w(("    ok=%s result=%s"):format(tostring(ok), serialize(result)))
-			task.wait(1)
-		end
-
-		if CONFIG.TEST_EGG_LOOP then
-			w(("  -- Loop: CustomEggs_Hatch(%s) x %d"):format(egg.uid, CONFIG.EGG_LOOP_MAX))
-			local total = 0
-			for i = 1, CONFIG.EGG_LOOP_MAX do
-				local ok, result = invoke("CustomEggs_Hatch", egg.uid)
-				w(("    [%d] ok=%s result=%s"):format(i, tostring(ok), serialize(result)))
-				if ok then total += 1 else break end
-				task.wait(0.15)
-			end
-			w(("    total: %d/%d"):format(total, CONFIG.EGG_LOOP_MAX))
-		end
-
-		flushSafe()
+		verifyConsume("1.uid+amount", fruitCmds.Consume, targetUid, CONFIG.FRUIT_AMOUNT)
+		verifyConsume("2.entry+amount", fruitCmds.Consume, {
+			id = targetData.id, sh = targetData.shiny, _am = targetData.amount,
+		}, CONFIG.FRUIT_AMOUNT)
+		verifyConsume("3.colon(uid)", function()
+			return fruitCmds:Consume(targetUid)
+		end)
+		verifyConsume("4.colon(uid,amount)", function()
+			return fruitCmds:Consume(targetUid, CONFIG.FRUIT_AMOUNT)
+		end)
+	else
+		w("No fruit in inventory")
 	end
 end
 
 flushSafe()
 
--- =====================================================
--- MERCHANT — PRECISE TELEPORT
--- =====================================================
-sep("MERCHANT 1 — DiamondMountainMerchant Util")
-local dmMerchant = Modules.DiamondMountainMerchant
-w("DiamondMountainMerchant:", typeof(dmMerchant))
+sep("FRUIT 3 — INVENTORY AFTER")
+local fruitAfter = getFruitSnapshot()
+local activeAfter = getActiveSnapshot()
 
+w("Inventory:")
+for uid, data in pairs(fruitAfter) do
+	local before = fruitBefore[uid]
+	local diff = before and (data.amount - before.amount) or data.amount
+	w(("  %s %s am=%d (diff=%+d) maxConsume=%d"):format(
+		data.id, data.shiny and "Shiny" or "Normal",
+		data.amount, diff, data.maxConsume
+	))
+end
+w("")
+w("Active:")
+for fruitId, data in pairs(activeAfter) do
+	local before = activeBefore[fruitId]
+	local diffN = data.Normal - (before and before.Normal or 0)
+	local diffS = data.Shiny - (before and before.Shiny or 0)
+	w(("  %s | Normal=%d (diff=%+d) Shiny=%d (diff=%+d)"):format(
+		fruitId, data.Normal, diffN, data.Shiny, diffS
+	))
+end
+
+flushSafe()
+
+-- =====================================================
+-- MERCHANT DEEP INSPECT
+-- =====================================================
+sep("MERCHANT 1 — Phase() + Directory.Merchants")
+local dmMerchant = Modules.DiamondMountainMerchant
 local currentPhase = nil
 local currentCamp = nil
-local visitAt = nil
 
 if typeof(dmMerchant) == "table" then
-	w("  CYCLE:", dmMerchant.CYCLE and table.concat(dmMerchant.CYCLE, ",") or "nil")
-	w("  REACH:", tostring(dmMerchant.REACH))
-	w("  TRAVEL_SECONDS:", tostring(dmMerchant.TRAVEL_SECONDS))
-	w("  DEFAULT_MOVE:", tostring(dmMerchant.DEFAULT_MOVE))
-	w("  OFFSET_ATTR:", tostring(dmMerchant.OFFSET_ATTR))
-	w("")
-
-	if typeof(dmMerchant.Phase) == "function" then
-		local ok, value = pcall(dmMerchant.Phase)
-		w(("  Phase() ok=%s value=%s"):format(tostring(ok), serialize(value)))
-		if ok then currentPhase = value end
-	end
-	if typeof(dmMerchant.Offset) == "function" then
-		local ok, value = pcall(dmMerchant.Offset)
-		w(("  Offset() ok=%s value=%s"):format(tostring(ok), serialize(value)))
-	end
-	if typeof(dmMerchant.MoveSeconds) == "function" then
-		local ok, value = pcall(dmMerchant.MoveSeconds)
-		w(("  MoveSeconds() ok=%s value=%s"):format(tostring(ok), serialize(value)))
-	end
-	if typeof(dmMerchant.Folder) == "function" then
-		local ok, value = pcall(dmMerchant.Folder)
-		w(("  Folder() ok=%s value=%s"):format(tostring(ok), serialize(value)))
-	end
-
-	if currentPhase ~= nil then
-		if typeof(dmMerchant.CampOf) == "function" then
-			local ok, value = pcall(dmMerchant.CampOf, currentPhase)
-			w(("  CampOf(%s) ok=%s value=%s"):format(
-				tostring(currentPhase), tostring(ok), serialize(value)
-			))
-			if ok then currentCamp = value end
+	local ok, phase = pcall(dmMerchant.Phase)
+	w(("Phase() ok=%s"):format(tostring(ok)))
+	if ok and typeof(phase) == "table" then
+		currentPhase = phase
+		for k, v in pairs(phase) do
+			w(("  %s = %s"):format(tostring(k), serialize(v)))
 		end
-		if typeof(dmMerchant.VisitAt) == "function" then
-			local ok, value = pcall(dmMerchant.VisitAt, currentPhase)
-			w(("  VisitAt(%s) ok=%s value=%s"):format(
-				tostring(currentPhase), tostring(ok), serialize(value)
-			))
-			if ok then visitAt = value end
-		end
-		if typeof(dmMerchant.NextVisitAt) == "function" then
-			local ok, value = pcall(dmMerchant.NextVisitAt, currentPhase)
-			w(("  NextVisitAt(%s) ok=%s value=%s"):format(
-				tostring(currentPhase), tostring(ok), serialize(value)
-			))
+		if typeof(phase.Camp) == "number" then
+			currentCamp = phase.Camp
 		end
 	end
+end
 
-	w("")
-	w("-- Test all phases 1-10:")
-	for i = 1, 10 do
-		if typeof(dmMerchant.CampOf) == "function" then
-			local ok, camp = pcall(dmMerchant.CampOf, i)
-			local ok2, visit = false, nil
-			if typeof(dmMerchant.VisitAt) == "function" then
-				ok2, visit = pcall(dmMerchant.VisitAt, i)
+w("")
+w("-- Directory.Merchants:")
+local merchDir = Modules.MerchantsDir
+if typeof(merchDir) == "table" then
+	for k, v in pairs(merchDir) do
+		if typeof(v) == "table" then
+			w(("  [%s]"):format(tostring(k)))
+			for mk, mv in pairs(v) do
+				if typeof(mv) ~= "function" then
+					w(("    .%s = %s"):format(tostring(mk), serialize(mv)))
+				end
 			end
-			w(("  phase=%d | CampOf=%s | VisitAt=%s"):format(
-				i, tostring(camp), tostring(visit)
-			))
+		end
+	end
+else
+	w("  not loaded")
+end
+
+flushSafe()
+
+sep("MERCHANT 2 — Camp Merchant Part FULL INSPECT")
+local things2 = workspace:FindFirstChild("__THINGS")
+local container2 = things2 and things2:FindFirstChild("__INSTANCE_CONTAINER")
+local active2 = container2 and container2:FindFirstChild("Active")
+local mountain2 = active2 and active2:FindFirstChild("DiamondMountain")
+local camps2 = mountain2 and mountain2:FindFirstChild("Camps")
+
+if camps2 and currentCamp then
+	local campModel = camps2:FindFirstChild(tostring(currentCamp))
+	w(("Camp %s: %s"):format(tostring(currentCamp), campModel and "found" or "NOT FOUND"))
+	if campModel then
+		local merchant = campModel:FindFirstChild("Merchant")
+		if merchant then
+			w(("Merchant: %s (%s)"):format(merchant:GetFullName(), merchant.ClassName))
+			w("")
+			w("-- Merchant ALL descendants:")
+			for _, d in ipairs(merchant:GetDescendants()) do
+				local extra = ""
+				if d:IsA("BasePart") then
+					extra = (" pos=%.1f,%.1f,%.1f"):format(
+						d.Position.X, d.Position.Y, d.Position.Z
+					)
+				elseif d:IsA("ProximityPrompt") then
+					extra = (" enabled=%s actionText=%q objectText=%q"):format(
+						tostring(d.Enabled), tostring(d.ActionText), tostring(d.ObjectText)
+					)
+				elseif d:IsA("ClickDetector") then
+					extra = (" MaxActivationDistance=%.0f"):format(d.MaxActivationDistance)
+				elseif d:IsA("Attachment") then
+					extra = (" WorldPos=%.1f,%.1f,%.1f"):format(
+						d.WorldPosition.X, d.WorldPosition.Y, d.WorldPosition.Z
+					)
+				end
+				w(("  %s (%s)%s"):format(d.Name, d.ClassName, extra))
+			end
+
+			w("")
+			w("-- Merchant attributes:")
+			for k, v in pairs(merchant:GetAttributes()) do
+				w(("  %s = %s"):format(tostring(k), serialize(v)))
+			end
+
+			w("")
+			w("-- Camp ALL descendants with prompts/detectors:")
+			for _, d in ipairs(campModel:GetDescendants()) do
+				if d:IsA("ProximityPrompt") or d:IsA("ClickDetector")
+					or d:IsA("BillboardGui") or d:IsA("SurfaceGui")
+					or d:IsA("TextButton") or d:IsA("ImageButton")
+				then
+					local extra = ""
+					if d:IsA("ProximityPrompt") then
+						extra = (" enabled=%s actionText=%q"):format(
+							tostring(d.Enabled), tostring(d.ActionText)
+						)
+					end
+					w(("  %s (%s)%s"):format(d:GetFullName(), d.ClassName, extra))
+				end
+			end
+		else
+			w("Merchant part NOT FOUND")
+		end
+	end
+else
+	w("Camps NOT FOUND or no current camp")
+end
+
+flushSafe()
+
+sep("MERCHANT 3 — Merchant_GetOffers 4 ARG COMBOS")
+if CONFIG.TEST_MERCHANT then
+	local info = instanceInfo
+	local camp = currentCamp
+	local merchantId = "DiamondMountainMerchant"
+
+	local function test(label, ...)
+		local ok, result = invoke("Merchant_GetOffers", ...)
+		w(("[%s] ok=%s result=%s"):format(label, tostring(ok), serialize(result)))
+		task.wait(CONFIG.WAIT)
+	end
+
+	test("1.no-arg")
+	if camp then test("2.camp", tostring(camp)) end
+	test("3.merchantId", merchantId)
+	if camp then test("4.merchantId,camp", merchantId, tostring(camp)) end
+	if camp then test("5.camp,merchantId", tostring(camp), merchantId) end
+end
+
+flushSafe()
+
+sep("MERCHANT 4 — TravelingMerchant_GetState 4 ARG COMBOS")
+if CONFIG.TEST_MERCHANT then
+	local camp = currentCamp
+	local merchantId = "DiamondMountainMerchant"
+
+	local function test(label, ...)
+		local ok, result = invoke("TravelingMerchant_GetState", ...)
+		w(("[%s] ok=%s result=%s"):format(label, tostring(ok), serialize(result)))
+		task.wait(CONFIG.WAIT)
+	end
+
+	test("1.no-arg")
+	if camp then test("2.camp", tostring(camp)) end
+	test("3.merchantId", merchantId)
+	if camp then test("4.merchantId,camp", merchantId, tostring(camp)) end
+end
+
+flushSafe()
+
+sep("MERCHANT 5 — Teleport + Fire Prompts + GetState")
+if CONFIG.TEST_MERCHANT and camps2 and currentCamp and root then
+	local campModel = camps2:FindFirstChild(tostring(currentCamp))
+	local merchant = campModel and campModel:FindFirstChild("Merchant")
+	if merchant and merchant:IsA("BasePart") then
+		local originalCFrame = root.CFrame
+		root.CFrame = CFrame.new(merchant.Position)
+		task.wait(0.6)
+		w(("Teleported to merchant pos=%.1f,%.1f,%.1f"):format(
+			merchant.Position.X, merchant.Position.Y, merchant.Position.Z
+		))
+		w(("Player now at: %.1f,%.1f,%.1f"):format(
+			root.Position.X, root.Position.Y, root.Position.Z
+		))
+
+		-- Fire all prompts
+		local promptCount = 0
+		for _, d in ipairs(campModel:GetDescendants()) do
+			if d:IsA("ProximityPrompt") then
+				if not d.Enabled then pcall(function() d.Enabled = true end) end
+				pcall(fireproximityprompt, d)
+				promptCount += 1
+				w(("Fired prompt: %s"):format(d:GetFullName()))
+				task.wait(0.2)
+			end
+		end
+		w(("Total prompts fired: %d"):format(promptCount))
+
+		-- Fire click detectors
+		local clickCount = 0
+		for _, d in ipairs(campModel:GetDescendants()) do
+			if d:IsA("ClickDetector") then
+				pcall(fireclickdetector, d)
+				clickCount += 1
+				w(("Fired clickdetector: %s"):format(d:GetFullName()))
+				task.wait(0.2)
+			end
+		end
+		w(("Total clickdetectors fired: %d"):format(clickCount))
+
+		-- MachineScreens_Get
+		for _, id in ipairs({ tostring(currentCamp), "Merchant", "DiamondMountainMerchant", "TravelingMerchant" }) do
+			pcall(fire, "MachineScreens_Get", id)
+			task.wait(0.1)
+		end
+
+		-- GetState after
+		local ok, state = invoke("TravelingMerchant_GetState")
+		w(("GetState() after: ok=%s type=%s"):format(tostring(ok), typeof(state)))
+		if ok and typeof(state) == "table" then
+			for k, v in pairs(state) do
+				w(("  %s = %s"):format(tostring(k), serialize(v)))
+			end
+		end
+
+		-- GetOffers after
+		local ok2, offers = invoke("Merchant_GetOffers", "DiamondMountainMerchant")
+		w(("GetOffers(merchantId) after: ok=%s type=%s"):format(tostring(ok2), typeof(offers)))
+		if ok2 and typeof(offers) == "table" then
+			for k, v in pairs(offers) do
+				w(("  %s = %s"):format(tostring(k), serialize(v)))
+			end
+		end
+
+		pcall(function() root.CFrame = originalCFrame end)
+	end
+end
+
+flushSafe()
+
+sep("MERCHANT 6 — PURCHASE 8 ARG COMBOS")
+if CONFIG.TEST_MERCHANT and CONFIG.TEST_MERCHANT_PURCHASE then
+	local camp = currentCamp
+	local merchantId = "DiamondMountainMerchant"
+
+	local function test(label, remoteName, ...)
+		local ok, result = invoke(remoteName, ...)
+		w(("[%s] %s ok=%s result=%s"):format(
+			label, remoteName, tostring(ok), serialize(result)
+		))
+		task.wait(CONFIG.WAIT)
+	end
+
+	-- TravelingMerchant_RequestPurchase
+	test("1", "TravelingMerchant_RequestPurchase", "1")
+	test("2", "TravelingMerchant_RequestPurchase", 1)
+	test("3", "TravelingMerchant_RequestPurchase", "1", 1)
+	if camp then
+		test("4", "TravelingMerchant_RequestPurchase", tostring(camp), "1")
+		test("5", "TravelingMerchant_RequestPurchase", tostring(camp), "1", 1)
+	end
+	test("6", "TravelingMerchant_RequestPurchase", merchantId, "1")
+	test("7", "TravelingMerchant_RequestPurchase", merchantId, "1", 1)
+	test("8", "TravelingMerchant_RequestPurchase", merchantId, tostring(camp or 1), "1")
+
+	w("")
+	w("-- Merchant_RequestPurchase:")
+	test("M1", "Merchant_RequestPurchase", "1")
+	test("M2", "Merchant_RequestPurchase", 1)
+	test("M3", "Merchant_RequestPurchase", "1", 1)
+	test("M4", "Merchant_RequestPurchase", merchantId, "1")
+	test("M5", "Merchant_RequestPurchase", merchantId, "1", 1)
+	if camp then
+		test("M6", "Merchant_RequestPurchase", tostring(camp), "1")
+		test("M7", "Merchant_RequestPurchase", tostring(camp), "1", 1)
+	end
+end
+
+flushSafe()
+
+sep("MERCHANT 7 — DiamondMountainCmds Feature + Networking")
+local dmCmds = Modules.DiamondMountainCmds
+if typeof(dmCmds) == "table" then
+	w("DiamondMountainCmds:", typeof(dmCmds))
+	w("  FEATURES:", dmCmds.FEATURES and table.concat(dmCmds.FEATURES, ",") or "nil")
+	w("")
+
+	if typeof(dmCmds.Feature) == "function" then
+		local ok, feature = pcall(dmCmds.Feature, "Merchant")
+		w(("Feature('Merchant') ok=%s type=%s"):format(tostring(ok), typeof(feature)))
+		if ok and typeof(feature) == "table" then
+			for k, v in pairs(feature) do
+				w(("  .%s = %s"):format(tostring(k), typeof(v)))
+			end
+		end
+	end
+
+	w("")
+	if typeof(dmCmds.Networking) == "function" then
+		local ok, networking = pcall(dmCmds.Networking)
+		w(("Networking() ok=%s type=%s"):format(tostring(ok), typeof(networking)))
+		if ok and typeof(networking) == "table" then
+			for k, v in pairs(networking) do
+				w(("  .%s = %s"):format(tostring(k), typeof(v)))
+			end
+		end
+	end
+
+	w("")
+	if typeof(dmCmds.Instance) == "function" then
+		local ok, inst = pcall(dmCmds.Instance)
+		w(("Instance() ok=%s type=%s"):format(tostring(ok), typeof(inst)))
+		if ok and typeof(inst) == "table" then
+			for k, v in pairs(inst) do
+				w(("  .%s = %s"):format(tostring(k), typeof(v)))
+			end
 		end
 	end
 end
 
 flushSafe()
 
-sep("MERCHANT 2 — Camp Structure + All Merchant Parts")
-local things = workspace:FindFirstChild("__THINGS")
-local container = things and things:FindFirstChild("__INSTANCE_CONTAINER")
-local active = container and container:FindFirstChild("Active")
-local mountain = active and active:FindFirstChild("DiamondMountain")
-local camps = mountain and mountain:FindFirstChild("Camps")
+sep("MERCHANT 8 — DiamondMountainMerchant Upvalues")
+if typeof(dmMerchant) == "table" then
+	for _, fnName in ipairs({ "Phase", "Offset", "CampOf", "VisitAt", "NextVisitAt", "MoveSeconds", "Folder", "Stop" }) do
+		local fn = dmMerchant[fnName]
+		if typeof(fn) == "function" then
+			w(("-- %s:"):format(fnName))
+			local info = debug.getinfo(fn)
+			w(("  params=%d nups=%d"):format(
+				info and info.numparams or 0, info and info.nups or 0
+			))
+			local ok, ups = pcall(debug.getupvalues, fn)
+			if ok and typeof(ups) == "table" then
+				for i, uv in pairs(ups) do
+					local tuv = typeof(uv)
+					if tuv == "table" then
+						local n = 0
+						for _ in pairs(uv) do n += 1 end
+						w(("    up[%d] = table(%d)"):format(i, n))
+					elseif tuv == "Instance" then
+						w(("    up[%d] = %s"):format(i, uv:GetFullName()))
+					else
+						w(("    up[%d] = %s"):format(i, serialize(uv)))
+					end
+				end
+			end
+		end
+	end
+end
 
-local campInfo = {}
+flushSafe()
 
-if camps then
-	for _, camp in ipairs(camps:GetChildren()) do
-		w("")
-		w(("=== Camp %s (%s)"):format(camp.Name, camp.ClassName))
-		local entry = { name = camp.Name, model = camp, candidates = {} }
-
-		for _, child in ipairs(camp:GetChildren()) do
+sep("MERCHANT 9 — Folder() children")
+if typeof(dmMerchant) == "table" and typeof(dmMerchant.Folder) == "function" then
+	local ok, folder = pcall(dmMerchant.Folder)
+	if ok and typeof(folder) == "Instance" then
+		w(("Folder(): %s"):format(folder:GetFullName()))
+		w("Children:")
+		for _, child in ipairs(folder:GetChildren()) do
 			local extra = ""
 			if child:IsA("BasePart") then
 				extra = (" pos=%.1f,%.1f,%.1f"):format(
@@ -887,192 +995,14 @@ if camps then
 				)
 			end
 			w(("  %s (%s)%s"):format(child.Name, child.ClassName, extra))
-
-			-- Collect merchant-related candidates
-			if child.Name:lower():find("merchant", 1, true) then
-				if child:IsA("BasePart") then
-					table.insert(entry.candidates, {
-						pos = child.Position,
-						label = child.Name .. " (BasePart)",
-						instance = child,
-					})
-				elseif child:IsA("Model") then
-					local part = child:FindFirstChildWhichIsA("BasePart", true)
-					if part then
-						table.insert(entry.candidates, {
-							pos = part.Position,
-							label = child.Name .. " (Model first part)",
-							instance = part,
-						})
-					end
-				end
-			end
 		end
-
-		-- Deep search for merchant + attachments
-		for _, d in ipairs(camp:GetDescendants()) do
+		w("Descendants with 'merchant':")
+		for _, d in ipairs(folder:GetDescendants()) do
 			if d.Name:lower():find("merchant", 1, true) then
-				if d:IsA("Attachment") then
-					table.insert(entry.candidates, {
-						pos = d.WorldPosition,
-						label = "Attachment " .. d.Name,
-						instance = d,
-					})
-					w(("  [ATTACHMENT] %s pos=%.1f,%.1f,%.1f"):format(
-						d:GetFullName(),
-						d.WorldPosition.X, d.WorldPosition.Y, d.WorldPosition.Z
-					))
-				elseif d:IsA("Seat") or d:IsA("VehicleSeat") then
-					table.insert(entry.candidates, {
-						pos = d.Position,
-						label = "Seat " .. d.Name,
-						instance = d,
-					})
-				elseif d:IsA("ProximityPrompt") then
-					w(("  [PROMPT] %s | enabled=%s actionText=%q objectText=%q"):format(
-						d:GetFullName(), tostring(d.Enabled),
-						tostring(d.ActionText), tostring(d.ObjectText)
-					))
-				end
-			end
-		end
-
-		-- Also add Spawn as fallback
-		local spawnPart = camp:FindFirstChild("Spawn")
-		if spawnPart and spawnPart:IsA("BasePart") then
-			table.insert(entry.candidates, {
-				pos = spawnPart.Position,
-				label = "Spawn (fallback)",
-				instance = spawnPart,
-			})
-		end
-
-		table.insert(campInfo, entry)
-	end
-else
-	w("Camps NOT FOUND")
-end
-
-flushSafe()
-
-sep("MERCHANT 3 — Remotes + GetState")
-if Modules.Network then
-	local getState = networkFolder:FindFirstChild("TravelingMerchant_GetState")
-	local purchase = networkFolder:FindFirstChild("TravelingMerchant_RequestPurchase")
-	local merchantOffers = networkFolder:FindFirstChild("Merchant_GetOffers")
-	local merchantPurchase = networkFolder:FindFirstChild("Merchant_RequestPurchase")
-	w("TravelingMerchant_GetState:", tostring(getState ~= nil))
-	w("TravelingMerchant_RequestPurchase:", tostring(purchase ~= nil))
-	w("Merchant_GetOffers:", tostring(merchantOffers ~= nil))
-	w("Merchant_RequestPurchase:", tostring(merchantPurchase ~= nil))
-	w("")
-	if getState then
-		local ok, state = invoke("TravelingMerchant_GetState")
-		w(("GetState() ok=%s type=%s"):format(tostring(ok), typeof(state)))
-		if ok and typeof(state) == "table" then
-			for k, v in pairs(state) do
-				w(("  %s = %s"):format(tostring(k), serialize(v)))
+				w(("  %s (%s)"):format(d:GetFullName(), d.ClassName))
 			end
 		end
 	end
-	if merchantOffers then
-		local ok, offers = invoke("Merchant_GetOffers")
-		w(("GetOffers() ok=%s type=%s"):format(tostring(ok), typeof(offers)))
-		if ok and typeof(offers) == "table" then
-			for k, v in pairs(offers) do
-				w(("  %s = %s"):format(tostring(k), serialize(v)))
-			end
-		end
-	end
-end
-
-flushSafe()
-
-sep("MERCHANT 4 — PRECISE TELEPORT + PURCHASE TEST")
-if CONFIG.TEST_MERCHANT and CONFIG.TEST_MERCHANT_PURCHASE and #campInfo > 0 and root then
-	for _, entry in ipairs(campInfo) do
-		if #entry.candidates == 0 then
-			w(("=== Camp %s | no candidates — skip"):format(entry.name))
-		else
-			w("")
-			w(("=== Camp %s | %d candidate positions"):format(entry.name, #entry.candidates))
-
-			for idx, candidate in ipairs(entry.candidates) do
-				w("")
-				w(("  -- Candidate %d: %s | pos=%.1f,%.1f,%.1f"):format(
-					idx, candidate.label,
-					candidate.pos.X, candidate.pos.Y, candidate.pos.Z
-				))
-
-				-- Precise teleport
-				local ok, dist = teleportExact(candidate.pos, "camp-" .. entry.name .. "-" .. idx)
-				if not ok then
-					w(("    Teleport FAILED: %s"):format(tostring(dist)))
-				else
-					w(("    Teleport OK (dist=%.1f)"):format(dist))
-
-					-- Fire all prompts in camp
-					local promptCount = 0
-					for _, d in ipairs(entry.model:GetDescendants()) do
-						if d:IsA("ProximityPrompt") then
-							if not d.Enabled then pcall(function() d.Enabled = true end) end
-							pcall(fireproximityprompt, d)
-							promptCount += 1
-							task.wait(0.15)
-						end
-					end
-					w(("    Fired %d prompts"):format(promptCount))
-
-					-- MachineScreens_Get
-					local screens = networkFolder:FindFirstChild("MachineScreens_Get")
-					if screens then
-						for _, id in ipairs({ entry.name, "Merchant", "DiamondMountainMerchant", "DM_Merchant", "TravelingMerchant" }) do
-							pcall(fire, "MachineScreens_Get", id)
-							task.wait(0.1)
-						end
-						w("    Fired MachineScreens_Get")
-					end
-
-					-- GetState after teleport
-					local okS, state = invoke("TravelingMerchant_GetState")
-					w(("    GetState() ok=%s type=%s"):format(tostring(okS), typeof(state)))
-					if okS and typeof(state) == "table" then
-						for k, v in pairs(state) do
-							w(("      %s = %s"):format(tostring(k), serialize(v)))
-						end
-					end
-
-					-- Purchase attempts
-					local purchase = networkFolder:FindFirstChild("TravelingMerchant_RequestPurchase")
-					local merchantPurchase = networkFolder:FindFirstChild("Merchant_RequestPurchase")
-					if purchase then
-						w("    -- TravelingMerchant_RequestPurchase:")
-						for _, id in ipairs(CONFIG.MERCHANT_PURCHASE_IDS) do
-							local okP, resultP = invoke("TravelingMerchant_RequestPurchase", id)
-							w(("      id=%q ok=%s result=%s"):format(
-								tostring(id), tostring(okP), serialize(resultP)
-							))
-							task.wait(0.2)
-						end
-					end
-					if merchantPurchase then
-						w("    -- Merchant_RequestPurchase:")
-						for _, id in ipairs(CONFIG.MERCHANT_PURCHASE_IDS) do
-							local okP, resultP = invoke("Merchant_RequestPurchase", id)
-							w(("      id=%q ok=%s result=%s"):format(
-								tostring(id), tostring(okP), serialize(resultP)
-							))
-							task.wait(0.2)
-						end
-					end
-				end
-
-				flushSafe()
-			end
-		end
-	end
-elseif CONFIG.TEST_MERCHANT then
-	w("(skip — no camps or merchant purchase disabled)")
 end
 
 flushSafe()
@@ -1085,16 +1015,9 @@ w("Diagnostic complete.")
 w("File:", DIAG_PATH)
 w("Lines:", #lines)
 w("")
-w("Working flag signature:", tostring(workingSignature))
-w("Working fruit signature:", tostring(workingFruitSignature))
-w("Hatchable eggs:", #hatchableEggs)
-w("Current merchant phase:", tostring(currentPhase))
-w("Current merchant camp:", tostring(currentCamp))
-w("Visit at:", tostring(visitAt))
-w("Camp candidates:", (function()
-	local n = 0
-	for _, e in ipairs(campInfo) do n += #e.candidates end
-	return n
-end)())
+w("Flag valid positions:", #workingPositions)
+w("Flag consume tested:", CONFIG.TEST_FLAG_CONSUME and #workingPositions > 0)
+w("Fruit tested:", CONFIG.TEST_FRUIT)
+w("Merchant phase camp:", tostring(currentCamp))
 
 flush()
