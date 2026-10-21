@@ -1,6 +1,6 @@
 -- =====================================================
--- VRT HUB — PET SIMULATOR 99 v1.7.5
--- Fix fruit spam / flag / event egg max / merchant / Event tab cleanup
+-- VRT HUB — PET SIMULATOR 99 v1.9.1
+-- Bỏ hết debug buttons + debug functions
 -- =====================================================
 
 if getgenv().VRT_LOADED then
@@ -33,6 +33,7 @@ local localPlayer = playersService.LocalPlayer
 local libraryFolder = replicatedStorage:WaitForChild("Library")
 local clientFolder = libraryFolder:WaitForChild("Client")
 local directoryFolder = libraryFolder:WaitForChild("Directory")
+local utilFolder = libraryFolder:FindFirstChild("Util")
 local networkFolder = replicatedStorage:WaitForChild("Network")
 local directFolder = replicatedStorage:FindFirstChild("__DIRECTORY")
 
@@ -125,6 +126,7 @@ local Modules = {
 	Save = safeRequire(clientFolder:FindFirstChild("Save")),
 	EggCmds = safeRequire(clientFolder:FindFirstChild("EggCmds")),
 	CustomEggsCmds = safeRequire(clientFolder:FindFirstChild("CustomEggsCmds")),
+	HatchingCmds = safeRequire(clientFolder:FindFirstChild("HatchingCmds")),
 	DaycareCmds = safeRequire(clientFolder:FindFirstChild("DaycareCmds")),
 	PetEquipCmds = safeRequire(clientFolder:FindFirstChild("PetEquipCmds")),
 	UltimateCmds = safeRequire(clientFolder:FindFirstChild("UltimateCmds")),
@@ -135,6 +137,7 @@ local Modules = {
 	RankCmds = safeRequire(clientFolder:FindFirstChild("RankCmds")),
 	RebirthCmds = safeRequire(clientFolder:FindFirstChild("RebirthCmds")),
 	FlexibleFlagCmds = safeRequire(clientFolder:FindFirstChild("FlexibleFlagCmds")),
+	ZoneFlagCmds = safeRequire(clientFolder:FindFirstChild("ZoneFlagCmds")),
 	PlayerPet = safeRequire(clientFolder:FindFirstChild("PlayerPet")),
 	Balancing = safeRequire(clientFolder:FindFirstChild("Balancing")),
 	NotificationCmds = safeRequire(clientFolder:FindFirstChild("NotificationCmds")),
@@ -142,15 +145,22 @@ local Modules = {
 	InstanceZoneCmds = safeRequire(clientFolder:FindFirstChild("InstanceZoneCmds")),
 	MasteryCmds = safeRequire(clientFolder:FindFirstChild("MasteryCmds")),
 	CurrencyCmds = safeRequire(clientFolder:FindFirstChild("CurrencyCmds")),
-	WorldsUtil = safeRequire(libraryFolder:FindFirstChild("Util") and libraryFolder.Util:FindFirstChild("WorldsUtil")),
-	FlagUtil = safeRequire(libraryFolder:FindFirstChild("Util") and libraryFolder.Util:FindFirstChild("FlagUtil")),
-	ZoneUtil = safeRequire(libraryFolder:FindFirstChild("Util") and libraryFolder.Util:FindFirstChild("ZoneUtil")),
-	DaycareUtil = safeRequire(libraryFolder:FindFirstChild("Util") and libraryFolder.Util:FindFirstChild("DaycareUtil")),
+	DiamondMountainCmds = safeRequire(clientFolder:FindFirstChild("DiamondMountainCmds")),
+	MachineScreens = safeRequire(clientFolder:FindFirstChild("MachineScreens")),
+	WorldsUtil = safeRequire(utilFolder and utilFolder:FindFirstChild("WorldsUtil")),
+	ZonesUtil = safeRequire(utilFolder and utilFolder:FindFirstChild("ZonesUtil")),
+	EggsUtil = safeRequire(utilFolder and utilFolder:FindFirstChild("EggsUtil")),
+	MerchantUtil = safeRequire(utilFolder and utilFolder:FindFirstChild("MerchantUtil")),
+	TravelingMerchantUtil = safeRequire(utilFolder and utilFolder:FindFirstChild("TravelingMerchantUtil")),
+	DiamondMountainMerchant = safeRequire(utilFolder and utilFolder:FindFirstChild("DiamondMountainMerchant")),
+	DaycareUtil = safeRequire(utilFolder and utilFolder:FindFirstChild("DaycareUtil")),
 	Ranks = safeRequire(directoryFolder:FindFirstChild("Ranks")),
 	FreeGifts = safeRequire(directoryFolder:FindFirstChild("FreeGifts")),
 	EggsDir = safeRequire(directoryFolder:FindFirstChild("Eggs")),
 	ZonesDir = safeRequire(directoryFolder:FindFirstChild("Zones")),
 	PetsDir = safeRequire(directoryFolder:FindFirstChild("Pets")),
+	ZoneFlagsDir = safeRequire(directoryFolder:FindFirstChild("ZoneFlags")),
+	MerchantsDir = safeRequire(directoryFolder:FindFirstChild("Merchants")),
 	Items = safeRequire(libraryFolder:FindFirstChild("Items")),
 }
 
@@ -191,9 +201,11 @@ end
 -- -----------------------------------------------------
 local vrt = getgenv().VRT or {}
 getgenv().VRT = vrt
-vrt.Version = "1.7.5"
+vrt.Version = "1.9.1"
 vrt.connections = {}
 vrt.loops = {}
+vrt.fruitLog = {}
+vrt.customEggMap = {}
 
 local settings = vrt.Settings or {}
 vrt.Settings = settings
@@ -253,7 +265,12 @@ local defaults = {
 	AutoRank = false,
 	SelectedFlag = "Coins Flag",
 	UseSelectedFlag = false,
+	AutoUseFlagInZone = false,
 	FlagAmount = 45,
+	AutoMerchant = false,
+	MerchantReturnToPos = true,
+	AutoClaimExpedition = false,
+	ExpeditionFallbackTeleport = true,
 	DMMaxCamp = 6,
 	FarmPoint = nil,
 	UseFarmPoint = false,
@@ -309,7 +326,9 @@ local PERSIST_KEYS = {
 	"CardCombine", "FusePets", "GoldMachine", "RainbowMachine",
 	"CoinJar", "Comet",
 	"AutoRank",
-	"SelectedFlag", "UseSelectedFlag", "FlagAmount",
+	"SelectedFlag", "UseSelectedFlag", "AutoUseFlagInZone", "FlagAmount",
+	"AutoMerchant", "MerchantReturnToPos",
+	"AutoClaimExpedition", "ExpeditionFallbackTeleport",
 	"DMMaxCamp", "UseFarmPoint", "UseDMFarmPoint",
 	"DMAutoJoin", "AdminAbuse",
 	"WebhookUrl", "WebhookEnabled",
@@ -755,7 +774,6 @@ end)
 
 -- -----------------------------------------------------
 -- Egg animation hook.
--- UPDATED: HookEggAnimation dùng TextLabel custom thay vì game-native
 -- -----------------------------------------------------
 local eggFrontend
 do
@@ -780,7 +798,6 @@ local function installEggHook()
 	vrt.originalPlayEgg = originalPlayEgg
 	local hook
 	if settings.HookEggAnimation then
-		-- Hook mode: bỏ animation hoàn toàn, chỉ hiện TextLabel custom
 		hook = function(eggName, ...)
 			if settings.EggNotification then
 				pcall(showEggNotification, eggName, getMaxHatch())
@@ -834,6 +851,30 @@ local function getOwnedPetUids()
 		end
 	end
 	return uids
+end
+
+local function getDmMountain()
+	local things = workspace:FindFirstChild("__THINGS")
+	local container = things and things:FindFirstChild("__INSTANCE_CONTAINER")
+	local active = container and container:FindFirstChild("Active")
+	return active and active:FindFirstChild("DiamondMountain")
+end
+
+local function getBreakZones()
+	local mountain = getDmMountain()
+	return mountain and mountain:FindFirstChild("BREAK_ZONES")
+end
+
+local function getExpedition()
+	local mountain = getDmMountain()
+	if not mountain then return nil end
+	local summit = mountain:FindFirstChild("Summit")
+	return summit and summit:FindFirstChild("Expedition")
+end
+
+local function getClaimPillar()
+	local expedition = getExpedition()
+	return expedition and expedition:FindFirstChild("ClaimPillar")
 end
 
 -- -----------------------------------------------------
@@ -1034,20 +1075,30 @@ local function getEggIdList()
 	end)
 end
 
-local function getCustomEggUuids()
+local function getCustomEggOptions()
 	return memoize("customEggs", function()
-		local uuids = {}
-		local things = workspace:FindFirstChild("__THINGS")
-		local folder = things and things:FindFirstChild("CustomEggs")
-		if folder then
-			for _, model in ipairs(folder:GetChildren()) do
-				if model:IsA("Model") then
-					table.insert(uuids, model.Name)
+		local options = {}
+		vrt.customEggMap = {}
+		local cmds = Modules.CustomEggsCmds
+		if cmds and typeof(cmds.All) == "function" then
+			local ok, data = pcall(cmds.All)
+			if ok and typeof(data) == "table" then
+				for uid, egg in pairs(data) do
+					if typeof(egg) == "table" and egg._hatchable == true then
+						local name = egg._id or egg.name or uid
+						local display = name .. " | " .. tostring(uid):sub(1, 8)
+						vrt.customEggMap[display] = {
+							uid = uid,
+							name = name,
+							position = egg._position,
+						}
+						table.insert(options, display)
+					end
 				end
 			end
 		end
-		table.sort(uuids)
-		return uuids
+		table.sort(options)
+		return options
 	end)
 end
 
@@ -1239,25 +1290,57 @@ Core.ClickAuraViz = function()
 	viz.CFrame = CFrame.new(root.Position) * VIZ_ROTATION
 end
 
--- UPDATED: Custom egg giờ loop maxHatch lần (game chỉ nhận uuid)
+local function hatchCustomEgg(uuid)
+	if not uuid or uuid == "" then return 0 end
+	local maxHatch = getMaxHatch()
+
+	local cmds = Modules.CustomEggsCmds
+	local eggData = nil
+	if cmds and typeof(cmds.All) == "function" then
+		local ok, list = pcall(cmds.All)
+		if ok and typeof(list) == "table" then
+			eggData = list[uuid]
+		end
+	end
+
+	if eggData and eggData._position then
+		local root = getRoot()
+		if root and (root.Position - eggData._position).Magnitude > 10 then
+			root.CFrame = CFrame.new(eggData._position + Vector3.new(0, 5, 0))
+			task.wait(0.3)
+		end
+	end
+
+	local okBatch, result = invoke("CustomEggs_Hatch", uuid, maxHatch)
+	if okBatch and result == true then
+		return maxHatch
+	end
+
+	local total = 0
+	for i = 1, maxHatch do
+		local ok = invoke("CustomEggs_Hatch", uuid)
+		if not ok then break end
+		total += 1
+		if i < maxHatch then task.wait(0.08) end
+	end
+	return total
+end
+
 Core.OpenEgg = function()
 	local root = getRoot()
 	if not root then return end
 	local rootPos = root.Position
 
-	local things = workspace:FindFirstChild("__THINGS")
-	if not things then return end
-
 	local customEgg, customDist = nil, math.huge
-	local customFolder = things:FindFirstChild("CustomEggs")
-	if customFolder then
-		for _, model in ipairs(customFolder:GetChildren()) do
-			if model:IsA("Model") then
-				local ok, pivot = pcall(function() return model.WorldPivot end)
-				if ok and pivot then
-					local d = (pivot.Position - rootPos).Magnitude
+	local cmds = Modules.CustomEggsCmds
+	if cmds and typeof(cmds.All) == "function" then
+		local ok, list = pcall(cmds.All)
+		if ok and typeof(list) == "table" then
+			for uid, egg in pairs(list) do
+				if typeof(egg) == "table" and egg._hatchable == true and egg._position then
+					local d = (egg._position - rootPos).Magnitude
 					if d < customDist then
-						customEgg, customDist = model, d
+						customEgg, customDist = uid, d
 					end
 				end
 			end
@@ -1275,19 +1358,12 @@ Core.OpenEgg = function()
 
 	if not customEgg and not normalEgg then return end
 
-	local maxHatch = getMaxHatch()
-
 	if customEgg and customDist <= normalDist then
-		-- Custom egg: loop maxHatch lần
-		for i = 1, maxHatch do
-			local ok = invoke("CustomEggs_Hatch", customEgg.Name)
-			if not ok then break end
-			if i < maxHatch then task.wait(0.05) end
-		end
+		hatchCustomEgg(customEgg)
 	elseif normalEgg then
 		local eggId = getEggIdByNumber(normalEgg.eggNumber)
 		if not eggId then return end
-		invoke("Eggs_RequestPurchase", eggId, maxHatch)
+		invoke("Eggs_RequestPurchase", eggId, getMaxHatch())
 	end
 end
 
@@ -1341,16 +1417,10 @@ Core.OpenSelectedEgg = function()
 	invoke("Eggs_RequestPurchase", eggId, getMaxHatch())
 end
 
--- UPDATED: loop maxHatch lần cho custom egg
 Core.BuySelectedCustomEgg = function()
 	local uuid = settings.SelectedCustomEggUuid
 	if not uuid or uuid == "" then return end
-	local maxHatch = getMaxHatch()
-	for i = 1, maxHatch do
-		local ok = invoke("CustomEggs_Hatch", uuid)
-		if not ok then break end
-		if i < maxHatch then task.wait(0.05) end
-	end
+	hatchCustomEgg(uuid)
 end
 
 Core.InfinitePetSpeed = function(enabled)
@@ -1450,10 +1520,6 @@ Core.Daycare = function()
 		for uid in pairs(save.DaycareActive) do
 			local ok, pet = pcall(daycare.Claim, uid)
 			if ok and pet then
-				if not vrt.daycareDebug then
-					vrt.daycareDebug = true
-					print(("[VRT] Daycare: claimed %s"):format(tostring(uid)))
-				end
 				invalidateSaveCache()
 				return
 			end
@@ -1539,37 +1605,37 @@ Core.BuyEggSlots = function()
 end
 
 -- -----------------------------------------------------
--- FLAG HELPERS (UPDATED)
+-- FLAG (auto-use in zone, no teleport)
 -- -----------------------------------------------------
+local flagAutoCache = {
+	lastCheck = 0,
+	lastConsume = 0,
+	lastZone = nil,
+	zoneLog = {},
+	failLog = {},
+}
+
 local function resolveFlagId(displayName)
 	if not displayName or displayName == "" then return nil end
 	if findInventoryEntry(displayName) then return displayName end
 	local base = displayName:gsub("%s*Flag$", "")
-	if findInventoryEntry(base) then return base end
-	if findInventoryEntry(base .. "Flag") then return base .. "Flag" end
-	if findInventoryEntry(base .. "_Flag") then return base .. "_Flag" end
-	local save = getSaveCached()
-	if save and typeof(save.Inventory) == "table" then
-		local baseLower = base:lower()
-		for _, bucket in pairs(save.Inventory) do
-			if typeof(bucket) == "table" then
-				for _, e in pairs(bucket) do
-					if typeof(e) == "table" and typeof(e.id) == "string" then
-						local lower = e.id:lower()
-						if lower == baseLower
-							or lower == baseLower .. "flag"
-							or lower == baseLower .. "_flag"
-							or lower == baseLower .. " flag"
-							or lower:find(baseLower, 1, true)
-						then
-							return e.id
-						end
-					end
-				end
-			end
+	for _, candidate in ipairs({ base, base .. " Flag", base .. "Flag", base .. "_Flag" }) do
+		if findInventoryEntry(candidate) then return candidate end
+	end
+	return nil
+end
+
+local function getFlagGameMax(flagId)
+	local flagCmds = Modules.FlexibleFlagCmds
+	local root = getRoot()
+	if not flagCmds or not root then return 45 end
+	if typeof(flagCmds.GetMaxPlaceAutomaticContext) == "function" then
+		local ok, value = pcall(flagCmds.GetMaxPlaceAutomaticContext, root.Position)
+		if ok and typeof(value) == "number" and value > 0 then
+			return value
 		end
 	end
-	return displayName
+	return 45
 end
 
 Core.GetFlagOwnedAmount = function(displayName)
@@ -1579,25 +1645,155 @@ Core.GetFlagOwnedAmount = function(displayName)
 	return entry and (entry._am or 0) or 0, resolvedId
 end
 
-Core.GetFlagGameMax = function()
-	local gameMax = 45
-	local flagUtil = Modules.FlagUtil
-	if flagUtil and flagUtil.computeMaxFlags then
-		local ok, maxFlags = pcall(flagUtil.computeMaxFlags)
-		if ok and typeof(maxFlags) == "number" and maxFlags > 0 then
-			gameMax = maxFlags
-		end
-	end
-	return gameMax
+Core.GetFlagGameMax = function(flagId)
+	return getFlagGameMax(flagId or settings.SelectedFlag)
 end
 
 Core.GetFlagMaxAmount = function(displayName)
 	local owned = Core.GetFlagOwnedAmount(displayName)
 	if owned <= 0 then return 0 end
-	return math.min(owned, Core.GetFlagGameMax())
+	return math.min(owned, getFlagGameMax(displayName))
 end
 
--- UPDATED: flag consume với cooldown + resolve id + slider amount
+local function detectCurrentZone()
+	local root = getRoot()
+	if not root then return nil end
+
+	local mapCmds = Modules.MapCmds
+	if mapCmds and mapCmds.GetCurrentBreakZone then
+		local ok, zone = pcall(mapCmds.GetCurrentBreakZone)
+		if ok and zone then
+			local zoneId = typeof(zone) == "table"
+				and (zone.ZoneNumber or zone.Name or zone._id)
+				or tostring(zone)
+			local anchorPos = nil
+			local breakZones = getBreakZones()
+			if breakZones then
+				local zoneNum = typeof(zone) == "table" and zone.ZoneNumber
+				if zoneNum then
+					local zonePart = breakZones:FindFirstChild("Zone" .. tostring(zoneNum))
+					if zonePart and zonePart:IsA("BasePart") then
+						anchorPos = zonePart.Position
+					end
+				end
+				if not anchorPos and typeof(zoneId) == "string" then
+					for _, zp in ipairs(breakZones:GetChildren()) do
+						if zp:IsA("BasePart") and zp.Name == zoneId then
+							anchorPos = zp.Position
+							break
+						end
+					end
+				end
+			end
+			return { id = tostring(zoneId), anchorPos = anchorPos, zone = zone }
+		end
+	end
+
+	local breakZones = getBreakZones()
+	if breakZones then
+		for _, zonePart in ipairs(breakZones:GetChildren()) do
+			if zonePart:IsA("BasePart") then
+				local rel = zonePart.CFrame:PointToObjectSpace(root.Position)
+				local halfX = math.max(zonePart.Size.X / 2, 1)
+				local halfY = math.max(zonePart.Size.Y / 2, 1)
+				local halfZ = math.max(zonePart.Size.Z / 2, 1)
+				if math.abs(rel.X) <= halfX
+					and math.abs(rel.Y) <= halfY
+					and math.abs(rel.Z) <= halfZ then
+					return {
+						id = zonePart.Name,
+						anchorPos = zonePart.Position,
+						zone = zonePart,
+					}
+				end
+			end
+		end
+	end
+
+	return nil
+end
+
+local function checkZoneFlag(anchorPos)
+	local flagCmds = Modules.FlexibleFlagCmds
+	if not flagCmds or typeof(flagCmds.SpatialQuery) ~= "function" then
+		return false, nil, nil
+	end
+	if not anchorPos then return false, nil, nil end
+	local ok, ctx = pcall(flagCmds.SpatialQuery, anchorPos)
+	if not ok or not ctx then return false, nil, nil end
+	local endTime = ctx.EndTime
+	if endTime and endTime <= os.time() then
+		return false, ctx.FlagId, endTime
+	end
+	return true, ctx.FlagId, endTime
+end
+
+local function tryConsumeFlag(flagId, amount)
+	local flagCmds = Modules.FlexibleFlagCmds
+	local zoneFlagCmds = Modules.ZoneFlagCmds
+	local root = getRoot()
+	if not root then return false, "no root" end
+
+	local info = getInstanceInfo()
+	local instanceId = info and info.InstanceId
+	local areaId = info and info.AreaId
+	local pos = root.Position
+
+	local attempts = {}
+	local function try(label, fn, ...)
+		local ok, result = pcall(fn, ...)
+		local success = ok and result ~= false
+		table.insert(attempts, { label = label, ok = ok, result = result, success = success })
+		return success
+	end
+
+	if typeof(flagCmds) == "table" and flagCmds.Consume then
+		if try("con-pos", flagCmds.Consume, flagId, amount, pos) then
+			return true, "con-pos"
+		end
+		if instanceId and try("con-instanceId", flagCmds.Consume, flagId, amount, instanceId) then
+			return true, "con-instanceId"
+		end
+		if areaId and try("con-areaId", flagCmds.Consume, flagId, amount, areaId) then
+			return true, "con-areaId"
+		end
+		if try("con-2args", flagCmds.Consume, flagId, amount) then
+			return true, "con-2args"
+		end
+	end
+
+	if typeof(flagCmds) == "table" and flagCmds.ActivateFlag then
+		if try("act-pos", flagCmds.ActivateFlag, flagId, pos) then
+			return true, "act-pos"
+		end
+		if try("act-flag", flagCmds.ActivateFlag, flagId) then
+			return true, "act-flag"
+		end
+	end
+
+	if typeof(zoneFlagCmds) == "table" and zoneFlagCmds.Consume then
+		if try("zcon-pos", zoneFlagCmds.Consume, flagId, amount, pos) then
+			return true, "zcon-pos"
+		end
+		if try("zcon-2args", zoneFlagCmds.Consume, flagId, amount) then
+			return true, "zcon-2args"
+		end
+	end
+
+	if try("remote-flex-pos", function()
+		return invoke("FlexibleFlags_Consume", flagId, amount, pos)
+	end) then
+		return true, "remote-flex-pos"
+	end
+	if try("remote-flex-2args", function()
+		return invoke("FlexibleFlags_Consume", flagId, amount)
+	end) then
+		return true, "remote-flex-2args"
+	end
+
+	return false, attempts
+end
+
 Core.ActivateFlag = function()
 	local flagId = settings.SelectedFlag
 	if not flagId or flagId == "" then return end
@@ -1617,50 +1813,531 @@ Core.ActivateFlag = function()
 	end
 
 	local requested = settings.FlagAmount or 45
-	local gameMax = Core.GetFlagGameMax()
+	local gameMax = getFlagGameMax(resolvedId)
 	local amount = math.min(requested, owned, gameMax)
 	if amount <= 0 then return end
 
-	local info = getInstanceInfo()
-	local instanceId = info and (info.InstanceId or info.instanceId) or nil
-	local areaId = info and (info.AreaId or info.areaId) or nil
-	if not instanceId or not areaId then
-		if not vrt.flagInfoWarned then
-			vrt.flagInfoWarned = true
-			warn("[VRT] Flag: không lấy được InstanceId/AreaId")
-		end
-		return
-	end
-
-	local flagCmds = Modules.FlexibleFlagCmds
-	if flagCmds and flagCmds.Consume then
-		local ok, result = pcall(flagCmds.Consume, resolvedId, amount, instanceId, areaId)
-		if ok and result ~= false then
-			invalidateSaveCache()
-			if not vrt.flagSuccessLogged then
-				vrt.flagSuccessLogged = true
-				print(("[VRT] Flag used: %s x%d (module)"):format(resolvedId, amount))
-			end
-			return
-		end
-	end
-
-	local ok = invoke("FlexibleFlags_Consume", resolvedId, amount, instanceId, areaId)
+	local ok, used = tryConsumeFlag(resolvedId, amount)
 	if ok then
 		invalidateSaveCache()
 		if not vrt.flagSuccessLogged then
 			vrt.flagSuccessLogged = true
-			print(("[VRT] Flag used: %s x%d (remote)"):format(resolvedId, amount))
+			print(("[VRT] Flag used: %s x%d via %s"):format(resolvedId, amount, tostring(used)))
 		end
 		return
 	end
 
-	invoke("Flags: Consume", resolvedId, amount)
-	invalidateSaveCache()
+	if not vrt.flagFailLogged then
+		vrt.flagFailLogged = true
+		warn(("[VRT] Flag consume FAILED: %s x%d"):format(resolvedId, amount))
+	end
 end
 
+Core.AutoUseFlag = function()
+	local root = getRoot()
+	if not root then return end
+
+	local now = os.clock()
+	if now - flagAutoCache.lastCheck < 1 then return end
+	flagAutoCache.lastCheck = now
+
+	local zoneInfo = detectCurrentZone()
+	if not zoneInfo then
+		flagAutoCache.lastZone = nil
+		return
+	end
+
+	local hasFlag, existingFlagId, endTime = checkZoneFlag(zoneInfo.anchorPos)
+	if hasFlag then
+		if not flagAutoCache.zoneLog[zoneInfo.id] then
+			flagAutoCache.zoneLog[zoneInfo.id] = existingFlagId
+			local remain = endTime and (endTime - os.time()) or 0
+			print(("[VRT] Zone %s has %s (expires in %ds)"):format(
+				zoneInfo.id, tostring(existingFlagId), remain
+			))
+		end
+		return
+	end
+
+	if now - flagAutoCache.lastConsume < 5 then return end
+
+	local selectedFlag = settings.SelectedFlag
+	local owned, resolvedId = Core.GetFlagOwnedAmount(selectedFlag)
+	if owned <= 0 then return end
+
+	local amount = math.min(settings.FlagAmount or 45, owned, getFlagGameMax(resolvedId))
+	if amount <= 0 then return end
+
+	local ok, used = tryConsumeFlag(resolvedId, amount)
+	if ok then
+		flagAutoCache.lastConsume = now
+		flagAutoCache.lastZone = zoneInfo.id
+		flagAutoCache.zoneLog[zoneInfo.id] = resolvedId
+		invalidateSaveCache()
+		print(("[VRT] Flag auto-used: %s x%d in zone %s via %s"):format(
+			resolvedId, amount, zoneInfo.id, tostring(used)
+		))
+	else
+		if not flagAutoCache.failLog[zoneInfo.id] then
+			flagAutoCache.failLog[zoneInfo.id] = true
+			warn(("[VRT] Flag auto-use FAILED in zone %s"):format(zoneInfo.id))
+		end
+	end
+end
+
+-- -----------------------------------------------------
+-- MERCHANT
+-- -----------------------------------------------------
+local merchantState = {
+	lastVisit = nil,
+	attempted = false,
+	lastAttemptAt = 0,
+	lastResult = nil,
+}
+
+local function getMerchantFeature()
+	local dmCmds = Modules.DiamondMountainCmds
+	if not dmCmds or typeof(dmCmds.Feature) ~= "function" then return nil end
+	local ok, feature = pcall(dmCmds.Feature, "Merchant")
+	if not ok or typeof(feature) ~= "table" then return nil end
+	return feature
+end
+
+local function getMerchantPhase()
+	local util = Modules.DiamondMountainMerchant
+	if not util or typeof(util.Phase) ~= "function" then return nil end
+	local ok, phase = pcall(util.Phase)
+	if not ok or typeof(phase) ~= "table" then return nil end
+	return phase
+end
+
+local function getMerchantPadPart(camp)
+	local model = workspace:FindFirstChild("TravelingMerchant" .. tostring(camp), true)
+	if not model then return nil end
+	local pad = model:FindFirstChild("Pad")
+	if pad and pad:IsA("BasePart") then return pad end
+	return nil
+end
+
+local function getMerchantPadObject(camp)
+	local feature = getMerchantFeature()
+	if not feature then return nil end
+	local okU, wagons = pcall(debug.getupvalue, feature.OnLeave, 4)
+	if not okU or typeof(wagons) ~= "table" then return nil end
+	for _, wagon in pairs(wagons) do
+		if typeof(wagon) == "table" and wagon.camp == camp and typeof(wagon.pad) == "table" then
+			return wagon.pad
+		end
+	end
+	return nil
+end
+
+local function openMerchantShop()
+	local feature = getMerchantFeature()
+	if not feature or typeof(feature.Open) ~= "function" then return false end
+	local ok = pcall(feature.Open)
+	return ok
+end
+
+local function closeMerchantShop()
+	local playerGui = localPlayer:FindFirstChild("PlayerGui")
+	local machines = playerGui and playerGui:FindFirstChild("_MACHINES")
+	local merchantGui = machines and machines:FindFirstChild("Merchant")
+	if not merchantGui then return end
+	local close = merchantGui:FindFirstChild("Close", true)
+	if not close or not close:IsA("ImageButton") then return end
+	for _, signal in ipairs({ close.Activated, close.MouseButton1Click }) do
+		local ok, conns = pcall(getconnections, signal)
+		if ok and conns then
+			for _, conn in ipairs(conns) do
+				if conn.Function then
+					pcall(conn.Function)
+				end
+			end
+		end
+	end
+end
+
+local function clickMerchantBuyButtons()
+	local playerGui = localPlayer:FindFirstChild("PlayerGui")
+	local machines = playerGui and playerGui:FindFirstChild("_MACHINES")
+	local merchantGui = machines and machines:FindFirstChild("Merchant")
+	if not merchantGui then return 0 end
+
+	local node = merchantGui
+	for _, name in ipairs({ "Frame", "ItemsFrame", "ScrollingItems", "Slots" }) do
+		node = node and node:FindFirstChild(name)
+	end
+	if not node then return 0 end
+
+	local clicked = 0
+	for i = 1, 6 do
+		local slot = node:FindFirstChild(tostring(i))
+		if slot then
+			local buy = slot:FindFirstChild("Buy")
+			if buy and buy:IsA("ImageButton") and buy.Visible then
+				local didClick = false
+				for _, signal in ipairs({ buy.Activated, buy.MouseButton1Click }) do
+					local ok, conns = pcall(getconnections, signal)
+					if ok and conns then
+						for _, conn in ipairs(conns) do
+							if conn.Function then
+								pcall(conn.Function)
+								didClick = true
+							end
+						end
+					end
+				end
+				if didClick then
+					clicked += 1
+					task.wait(0.3)
+				end
+			end
+		end
+	end
+	return clicked
+end
+
+local function tryMerchantBuyAll()
+	local bought = 0
+	for slot = 1, 6 do
+		local ok, result = invoke("Merchant_RequestPurchase", "DiamondMountainMerchant", slot)
+		if ok and result == true then
+			bought += 1
+		end
+		task.wait(0.15)
+	end
+	return bought
+end
+
+local function teleportToPos(pos)
+	local root = getRoot()
+	if not root then return false end
+	local wasAnchored = root.Anchored
+	root.Anchored = true
+	root.CFrame = CFrame.new(pos)
+	task.wait(0.5)
+	root.Anchored = wasAnchored
+	task.wait(0.3)
+	return true
+end
+
+Core.BuyFromMerchant = function()
+	local phase = getMerchantPhase()
+	if not phase then return "no phase" end
+	if not phase.Arrived then return "traveling" end
+
+	local visit = phase.Visit
+	local camp = phase.Camp
+	if typeof(visit) ~= "number" or typeof(camp) ~= "number" then
+		return "invalid phase"
+	end
+
+	if merchantState.lastVisit ~= visit then
+		merchantState.lastVisit = visit
+		merchantState.attempted = false
+		print(("[VRT Merchant] New visit %s @camp %d"):format(tostring(visit), camp))
+	end
+
+	if merchantState.attempted then
+		local isError = merchantState.lastResult
+			and (merchantState.lastResult:find("failed")
+				or merchantState.lastResult:find("error")
+				or merchantState.lastResult:find("no pad"))
+		if isError then
+			if os.clock() - merchantState.lastAttemptAt < 30 then
+				return "retry cooldown"
+			end
+			merchantState.attempted = false
+		else
+			return "already attempted"
+		end
+	end
+
+	merchantState.attempted = true
+	merchantState.lastAttemptAt = os.clock()
+
+	local root = getRoot()
+	if not root then return "no root" end
+
+	openMerchantShop()
+	task.wait(0.3)
+	local farBought = tryMerchantBuyAll()
+	if farBought > 0 then
+		merchantState.lastResult = ("bought %d far"):format(farBought)
+		print(("[VRT Merchant] Bought %d from FAR"):format(farBought))
+		return merchantState.lastResult
+	end
+
+	local padPart = getMerchantPadPart(camp)
+	local padObj = getMerchantPadObject(camp)
+	local targetPos = (padObj and padObj.padPosition) or (padPart and padPart.Position)
+	if not targetPos then
+		merchantState.lastResult = "no pad position"
+		return merchantState.lastResult
+	end
+
+	local originalCFrame = root.CFrame
+	local wasAnchored = root.Anchored
+	local distToPad = (root.Position - targetPos).Magnitude
+
+	if distToPad > 3 then
+		local okTp = teleportToPos(targetPos)
+		if not okTp then
+			merchantState.lastResult = "teleport failed"
+			return merchantState.lastResult
+		end
+		print(("[VRT Merchant] Teleported @camp %d | dist=%.2f -> %.2f"):format(
+			camp, distToPad, (root.Position - targetPos).Magnitude
+		))
+	end
+
+	openMerchantShop()
+	task.wait(0.8)
+
+	local padBought = tryMerchantBuyAll()
+	if padBought == 0 then
+		local clicked = clickMerchantBuyButtons()
+		if clicked > 0 then
+			padBought = clicked
+			print(("[VRT Merchant] Clicked %d buy buttons"):format(clicked))
+		end
+	end
+
+	if settings.MerchantReturnToPos and root and root.Parent then
+		root.Anchored = true
+		root.CFrame = originalCFrame
+		task.wait(0.3)
+		root.Anchored = wasAnchored
+		print("[VRT Merchant] Returned to original position")
+	end
+
+	closeMerchantShop()
+
+	merchantState.lastResult = ("bought %d pad"):format(padBought)
+	return merchantState.lastResult
+end
+
+-- -----------------------------------------------------
+-- EXPEDITION CLAIM
+-- -----------------------------------------------------
+local expeditionState = {
+	lastClaimAt = 0,
+	lastResult = nil,
+}
+
+local function findDropContainer(dropInfo)
+	if not dropInfo then return nil end
+	local frame = dropInfo:FindFirstChild("Frame")
+	if frame then
+		local items = frame:FindFirstChild("Items")
+		if items then
+			local c = items:FindFirstChild("Container")
+			if c then return c end
+		end
+	end
+	local items2 = dropInfo:FindFirstChild("Items")
+	if items2 then
+		local c2 = items2:FindFirstChild("Container")
+		if c2 then return c2 end
+	end
+	return dropInfo:FindFirstChild("Container", true)
+end
+
+local function countExpeditionLoot()
+	local claim = getClaimPillar()
+	if not claim then return 0 end
+	local dropInfo = claim:FindFirstChild("DropInfo")
+	if not dropInfo or not dropInfo.Enabled then return 0 end
+
+	local container = findDropContainer(dropInfo)
+	if not container then return 0 end
+
+	local count = 0
+	for _, render in ipairs(container:GetChildren()) do
+		if render:IsA("Frame") and render.Name == "Render" then
+			local holder = render:FindFirstChild("Holder")
+			local itemSlot = holder and holder:FindFirstChild("ItemSlot")
+			if itemSlot and itemSlot.Visible then
+				local qty = itemSlot:FindFirstChild("Quantity")
+				local icon = itemSlot:FindFirstChild("Icon")
+				local locked = itemSlot:FindFirstChild("Locked")
+				local hasQty = qty and qty:IsA("TextLabel") and qty.Text ~= ""
+				local hasIcon = icon and icon:IsA("ImageLabel") and icon.Image ~= ""
+				local isLocked = locked and locked:IsA("ImageLabel") and locked.Visible
+				if (hasQty or hasIcon) and not isLocked then
+					count += 1
+				end
+			end
+		end
+	end
+	return count
+end
+
+local function getExpeditionTouchPart()
+	local claim = getClaimPillar()
+	if not claim then return nil end
+	local touchInterest = claim:FindFirstChild("TouchInterest", true)
+	if touchInterest and touchInterest.Parent and touchInterest.Parent:IsA("BasePart") then
+		return touchInterest.Parent
+	end
+	local pad = claim:FindFirstChild("Pad", true)
+	if pad and pad:IsA("BasePart") then return pad end
+	return nil
+end
+
+local function claimExpeditionWithTeleport()
+	local touchPart = getExpeditionTouchPart()
+	if not touchPart then return false, "no touch part" end
+	local hrp = getRoot()
+	if not hrp then return false, "no char" end
+
+	local originalCFrame = hrp.CFrame
+	local wasAnchored = hrp.Anchored
+
+	hrp.Anchored = true
+	hrp.CFrame = CFrame.new(touchPart.Position + Vector3.new(0, 3, 0))
+
+	local start = os.clock()
+	while (os.clock() - start) < 2 do
+		task.wait(0.1)
+		if (hrp.Position - touchPart.Position).Magnitude < 5 then
+			break
+		end
+	end
+	task.wait(0.5)
+
+	pcall(firetouchinterest, touchPart, hrp, true)
+	task.wait(0.3)
+	pcall(firetouchinterest, touchPart, hrp, false)
+	task.wait(1.5)
+
+	hrp.CFrame = originalCFrame
+	task.wait(0.2)
+	hrp.Anchored = wasAnchored
+
+	return true, "teleport-touch"
+end
+
+local function clickExpeditionItemSlots()
+	local claim = getClaimPillar()
+	if not claim then return 0 end
+	local dropInfo = claim:FindFirstChild("DropInfo")
+	if not dropInfo then return 0 end
+	local container = findDropContainer(dropInfo)
+	if not container then return 0 end
+
+	local clicked = 0
+	for _, render in ipairs(container:GetChildren()) do
+		if render:IsA("Frame") and render.Name == "Render" then
+			local holder = render:FindFirstChild("Holder")
+			local itemSlot = holder and holder:FindFirstChild("ItemSlot")
+			if itemSlot and itemSlot:IsA("TextButton") and itemSlot.Visible then
+				for _, signal in ipairs({ itemSlot.Activated, itemSlot.MouseButton1Click }) do
+					local ok, conns = pcall(getconnections, signal)
+					if ok and conns then
+						for _, conn in ipairs(conns) do
+							if conn.Function then
+								pcall(conn.Function)
+								clicked += 1
+							end
+						end
+					end
+				end
+			end
+		end
+	end
+	return clicked
+end
+
+local function fireExpeditionInteractions()
+	local claim = getClaimPillar()
+	if not claim then return 0 end
+	local fired = 0
+	for _, d in ipairs(claim:GetDescendants()) do
+		if d:IsA("ProximityPrompt") then
+			if not d.Enabled then pcall(function() d.Enabled = true end) end
+			pcall(fireproximityprompt, d)
+			fired += 1
+		elseif d:IsA("ClickDetector") then
+			pcall(fireclickdetector, d)
+			fired += 1
+		end
+	end
+	return fired
+end
+
+Core.ClaimExpedition = function()
+	local expedition = getExpedition()
+	if not expedition then
+		if expeditionState.lastResult ~= "no expedition" then
+			expeditionState.lastResult = "no expedition"
+		end
+		return "no expedition"
+	end
+
+	local count = countExpeditionLoot()
+	if count <= 0 then
+		if expeditionState.lastResult ~= "no loot" then
+			expeditionState.lastResult = "no loot"
+		end
+		return "no loot"
+	end
+
+	if os.clock() - expeditionState.lastClaimAt < 15 then
+		return "cooldown"
+	end
+
+	print(("[VRT Expedition] Loot detected: %d items — claiming..."):format(count))
+
+	if settings.ExpeditionFallbackTeleport then
+		local ok, method = claimExpeditionWithTeleport()
+		if ok then
+			expeditionState.lastClaimAt = os.clock()
+			task.wait(1)
+			local newCount = countExpeditionLoot()
+			if newCount == 0 then
+				print(("[VRT Expedition] Claimed via %s — loot gone"):format(method))
+				expeditionState.lastResult = "claimed"
+				return "claimed"
+			end
+		end
+	end
+
+	local clicked = clickExpeditionItemSlots()
+	if clicked > 0 then
+		task.wait(1.5)
+		local newCount2 = countExpeditionLoot()
+		if newCount2 == 0 then
+			print("[VRT Expedition] Claimed via click")
+			expeditionState.lastResult = "claimed click"
+			expeditionState.lastClaimAt = os.clock()
+			return "claimed click"
+		end
+	end
+
+	local fired = fireExpeditionInteractions()
+	if fired > 0 then
+		task.wait(1.5)
+		local newCount3 = countExpeditionLoot()
+		if newCount3 == 0 then
+			print("[VRT Expedition] Claimed via interactions")
+			expeditionState.lastResult = "claimed interactions"
+			expeditionState.lastClaimAt = os.clock()
+			return "claimed interactions"
+		end
+	end
+
+	expeditionState.lastClaimAt = os.clock()
+	expeditionState.lastResult = "failed"
+	return "failed"
+end
+
+-- -----------------------------------------------------
+-- Other Core functions
+-- -----------------------------------------------------
 Core.BuyZone = function()
-	local zoneUtil = Modules.ZoneUtil
+	local zoneUtil = Modules.ZonesUtil
 	if zoneUtil and zoneUtil.GetMaxOwnedZone and zoneUtil.GetZoneFromNumber then
 		local okMax, maxOwned = pcall(zoneUtil.GetMaxOwnedZone)
 		if okMax and typeof(maxOwned) == "number" then
@@ -1889,138 +2566,69 @@ Core.OpenLootboxes = function()
 	end
 end
 
--- -----------------------------------------------------
--- FRUIT (UPDATED: fix spam khi đã max)
--- -----------------------------------------------------
 local fruitCooldown = {}
 
-local function countActiveFruits(activeFruits)
-	if typeof(activeFruits) ~= "table" then return 0, {} end
-	local total = 0
-	local perFruit = {}
-	for k, v in pairs(activeFruits) do
-		if typeof(v) == "number" then
-			perFruit[k] = v
-			total += v
-		elseif typeof(v) == "table" then
-			local count = 0
-			for _, bv in pairs(v) do
-				if typeof(bv) == "table" then
-					count += #bv
-				elseif typeof(bv) == "number" then
-					count += bv
-				end
-			end
-			if count == 0 and #v > 0 then count = #v end
-			perFruit[k] = count
-			total += count
-		end
-	end
-	return total, perFruit
-end
-
 Core.ConsumeFruits = function()
-	local save = getSaveCached()
-	if not save or typeof(save.Inventory) ~= "table" or not save.Inventory.Fruit then
-		return
-	end
 	local fruitCmds = Modules.FruitCmds
-	if not fruitCmds or not fruitCmds.Consume then return end
-
-	local fruits = getBucketIds("Fruit")
-	local wanted = resolveSelection(settings.SelectedFruits, fruits)
-
-	local queueLimit = 50
-	if fruitCmds.ComputeFruitQueueLimit then
-		local ok, limit = pcall(fruitCmds.ComputeFruitQueueLimit)
-		if ok and typeof(limit) == "number" and limit > 0 then
-			queueLimit = limit
-		end
-	end
-
-	local activeFruits = {}
-	if fruitCmds.GetActiveFruits then
-		local ok, active = pcall(fruitCmds.GetActiveFruits)
-		if ok and typeof(active) == "table" then
-			activeFruits = active
-		end
-	end
-
-	local totalActive, perFruitActive = countActiveFruits(activeFruits)
-	local remainingGlobal = queueLimit - totalActive
-	if remainingGlobal <= 0 then
-		if not vrt.fruitMaxLogged then
-			vrt.fruitMaxLogged = true
-			print(("[VRT] Fruit queue full (%d/%d)"):format(totalActive, queueLimit))
-		end
+	if not fruitCmds or typeof(fruitCmds.Consume) ~= "function" then return end
+	local save = getSaveCached()
+	if not save or typeof(save.Inventory) ~= "table" or typeof(save.Inventory.Fruit) ~= "table" then
 		return
 	end
-	vrt.fruitMaxLogged = false
 
-	local now = os.clock()
-	local sorted = {}
+	local wanted = resolveSelection(settings.SelectedFruits, getBucketIds("Fruit"))
+	local items = {}
 	for uid, entry in pairs(save.Inventory.Fruit) do
 		if typeof(entry) == "table" and entry.id and (entry._am or 0) > 0 then
 			if table.find(wanted, entry.id) then
-				table.insert(sorted, { uid = uid, entry = entry, amount = entry._am })
+				table.insert(items, { uid = uid, entry = entry })
 			end
 		end
 	end
-	table.sort(sorted, function(a, b) return a.amount > b.amount end)
+	if #items == 0 then return end
+	table.sort(items, function(a, b) return (a.entry._am or 0) > (b.entry._am or 0) end)
 
-	local consumedAny = false
-	for _, item in ipairs(sorted) do
-		if remainingGlobal <= 0 then break end
-		local fruitId = item.entry.id
-		local last = fruitCooldown[fruitId]
-		if last and now - last < 1 then continue end
+	local now = os.clock()
+	local totalConsumed = 0
 
-		local perFruitCount = perFruitActive[fruitId] or 0
-		local remainingFruit = queueLimit - perFruitCount
-		local remaining = math.min(remainingGlobal, remainingFruit)
-		if remaining <= 0 then continue end
+	for pass = 1, 3 do
+		local consumedThisPass = 0
+		for _, item in ipairs(items) do
+			local fruitId = item.entry.id
+			local stackKey = item.entry.sh == true and "Shiny" or "Normal"
+			local cooldownKey = fruitId .. "|" .. stackKey
+			local last = fruitCooldown[cooldownKey]
+			if last and now - last < 2 then continue end
 
-		local consumeAmount = math.min(item.amount, remaining)
-		if consumeAmount > 0 then
-			local ok = pcall(fruitCmds.Consume, item.uid, consumeAmount)
+			local maxConsume = 0
+			if typeof(fruitCmds.GetMaxConsume) == "function" then
+				local ok, value = pcall(fruitCmds.GetMaxConsume, item.uid)
+				if ok and typeof(value) == "number" and value > 0 then
+					maxConsume = value
+				end
+			end
+			if maxConsume <= 0 then continue end
+
+			local amount = math.min(item.entry._am or 0, maxConsume)
+			if amount <= 0 then continue end
+
+			local ok, result = pcall(fruitCmds.Consume, item.uid, amount)
 			if ok then
-				fruitCooldown[fruitId] = now
-				perFruitActive[fruitId] = perFruitCount + consumeAmount
-				remainingGlobal -= consumeAmount
-				consumedAny = true
+				fruitCooldown[cooldownKey] = now
+				totalConsumed += amount
+				consumedThisPass += 1
+				if not vrt.fruitLog[cooldownKey] then
+					vrt.fruitLog[cooldownKey] = true
+					print(("[VRT] Fruit: %s (%s) x%d"):format(fruitId, stackKey, amount))
+				end
+				task.wait(0.2)
 			end
 		end
+		if consumedThisPass == 0 then break end
+		if pass < 3 then task.wait(1) end
 	end
 
-	if consumedAny then
-		invalidateSaveCache()
-	end
-end
-
-Core.PrintFruitDebug = function()
-	local fruitCmds = Modules.FruitCmds
-	if not fruitCmds then
-		print("[VRT] FruitCmds: nil")
-		return
-	end
-	if fruitCmds.ComputeFruitQueueLimit then
-		local ok, limit = pcall(fruitCmds.ComputeFruitQueueLimit)
-		print(("[VRT] Queue limit: %s (%s)"):format(tostring(limit), tostring(ok)))
-	end
-	if fruitCmds.GetActiveFruits then
-		local ok, active = pcall(fruitCmds.GetActiveFruits)
-		print(("[VRT] GetActiveFruits: %s | type=%s"):format(tostring(ok), typeof(active)))
-		if ok and typeof(active) == "table" then
-			local total, perFruit = countActiveFruits(active)
-			print(("[VRT] Total active: %d"):format(total))
-			for k, v in pairs(perFruit) do
-				print(("[VRT]   %s = %d"):format(tostring(k), v))
-			end
-			for k, v in pairs(active) do
-				print(("[VRT]   raw[%s] = %s"):format(tostring(k), typeof(v)))
-			end
-		end
-	end
+	if totalConsumed > 0 then invalidateSaveCache() end
 end
 
 Core.FarmTreehouse = function()
@@ -2373,8 +2981,6 @@ local DiamondMountain = (function()
 	local GC_SCAN_COOLDOWN = 60
 	local GC_CHUNK = 2000
 	local OPTIMIZE_CHUNK = 400
-	local INVENTORY_OPEN_COOLDOWN = 5
-	local EXPAND_COOLDOWN = 5
 	local CAMP_UNREACHABLE_TTL = 30
 	local TELEPORT_TIMEOUT = 3
 	local MAX_CAMP = 6
@@ -2385,7 +2991,9 @@ local DiamondMountain = (function()
 	local REMOTE_NAMES = {
 		click = "Click", dealDamage = "Breakables_PlayerDealDamage",
 		joinPetBulk = "Breakables_JoinPetBulk", hatchEgg = "CustomEggs_Hatch",
-		merchantPurchase = "Merchant_RequestPurchase", machineScreens = "MachineScreens_Get",
+		merchantPurchase = "Merchant_RequestPurchase",
+		merchantGetOffers = "Merchant_GetOffers",
+		machineScreens = "MachineScreens_Get",
 		teleportInstance = "Teleports_RequestInstanceTeleport",
 		joinInstance = "Instancing_InvokeCustomFromClient",
 		purchaseUpgrade = "EventUpgrades: Purchase",
@@ -2560,69 +3168,15 @@ local DiamondMountain = (function()
 			end,
 		},
 		{
-			id = "merchant", name = "Buy From Traveling Merchant", interval = 3,
+			id = "merchant", name = "Buy From Traveling Merchant", interval = 10,
 			run = function(self)
-				local purchase = self.network.merchantPurchase
-				if not purchase then return "no purchase remote" end
-				local root = self:getRoot()
-				if not root then return "no character" end
-
-				local merchant, campName = self:findMerchant()
-				if not merchant then return "no merchant" end
-
-				local merchantPart
-				if merchant:IsA("BasePart") then
-					merchantPart = merchant
-				else
-					merchantPart = merchant:FindFirstChildWhichIsA("BasePart", true)
-				end
-				if not merchantPart then return "merchant has no part" end
-
-				local originalCFrame = root.CFrame
-				root.CFrame = CFrame.new(merchantPart.Position + Vector3.new(0, 5, 0))
-				task.wait(0.5)
-
-				-- Try fire proximity prompt to open shop
-				local opened = false
-				for _, d in ipairs(merchant:GetDescendants()) do
-					if d:IsA("ProximityPrompt") then
-						if not d.Enabled then pcall(function() d.Enabled = true end) end
-						pcall(fireproximityprompt, d)
-						opened = true
-						task.wait(0.15)
-					end
-				end
-
-				-- Try open via MachineScreens_Get
-				local screens = self.network.machineScreens
-				if screens then
-					for _, id in ipairs({ merchant.Name, MERCHANT_ID, "Merchant" }) do
-						pcall(screens.FireServer, screens, id)
-						task.wait(0.15)
-					end
-				end
-
-				-- Try purchase with multiple ids
-				local bought = 0
-				local idsToTry = { merchant.Name, MERCHANT_ID, "Merchant", "DiamondMountainMerchant" }
-				for _, merchantId in ipairs(idsToTry) do
-					for index = 1, 15 do
-						local ok, result = pcall(purchase.InvokeServer, purchase, merchantId, index)
-						if ok and result ~= false then
-							bought += 1
-							task.wait(0.08)
-						else
-							break
-						end
-					end
-					if bought > 0 then break end
-				end
-
-				pcall(function() root.CFrame = originalCFrame end)
-				if bought > 0 then
-					return string.format("bought %d @%s", bought, tostring(campName))
-				end
-				return opened and "shop opened, purchase failed" or "purchase failed"
+				return tostring(Core.BuyFromMerchant())
+			end,
+		},
+		{
+			id = "claimExpedition", name = "Claim Expeditions", interval = 10,
+			run = function(self)
+				return tostring(Core.ClaimExpedition())
 			end,
 		},
 		{
@@ -2642,36 +3196,6 @@ local DiamondMountain = (function()
 					end
 				end
 				return fired > 0 and string.format("sent %d", fired) or "no prompt"
-			end,
-		},
-		{
-			id = "claimExpedition", name = "Claim Expeditions", interval = 2,
-			run = function(self)
-				local mountain = self:getMountain()
-				local summit = mountain and mountain:FindFirstChild("Summit")
-				local expedition = summit and summit:FindFirstChild("Expedition")
-				local claim = expedition and expedition:FindFirstChild("ClaimPillar")
-				if not claim then return "no claim pillar" end
-				local root = self:getRoot()
-				if not root then return "no character" end
-				local anchor = claim:FindFirstChild("BillboardAnchor")
-				if anchor and anchor:IsA("BasePart") then
-					if distanceSq(root.Position, anchor.Position) > 400 then
-						root.CFrame = CFrame.new(anchor.Position + Vector3.new(0, 3, 0))
-						return "teleport claim"
-					end
-				end
-				local fired = 0
-				for _, d in ipairs(claim:GetDescendants()) do
-					if d:IsA("ProximityPrompt") then
-						if not d.Enabled then pcall(function() d.Enabled = true end) end
-						pcall(fireproximityprompt, d)
-						fired += 1
-					elseif d:IsA("TextButton") or d:IsA("ImageButton") then
-						if pressButton(d) then fired += 1 end
-					end
-				end
-				return fired > 0 and string.format("claimed %d", fired) or "waiting"
 			end,
 		},
 		{
@@ -2840,6 +3364,7 @@ local DiamondMountain = (function()
 		self.originalNamecall = nil
 		self.hookNamecall = nil
 		self.learnDone = false
+		self.merchantLogged = false
 		self:buildFeatures()
 		self:resolveRemotes()
 		self:installLearner()
@@ -2993,38 +3518,6 @@ local DiamondMountain = (function()
 		return list
 	end
 
-	-- NEW: tìm merchant ở bất kỳ camp nào (không chỉ highest)
-	function DiamondMountain:findMerchant()
-		local camps = self:getCamps()
-		if camps then
-			for _, camp in ipairs(camps:GetChildren()) do
-				local merchant = camp:FindFirstChild("Merchant")
-				if merchant then
-					return merchant, camp.Name
-				end
-			end
-		end
-		local mountain = self:getMountain()
-		if mountain then
-			for _, d in ipairs(mountain:GetDescendants()) do
-				if d.Name:lower():find("merchant", 1, true) and (d:IsA("Model") or d:IsA("BasePart")) then
-					return d, "mountain"
-				end
-			end
-		end
-		local things = workspaceService:FindFirstChild("__THINGS")
-		local instances = things and things:FindFirstChild("Instances")
-		local dm = instances and instances:FindFirstChild("DiamondMountain")
-		if dm then
-			for _, d in ipairs(dm:GetDescendants()) do
-				if d.Name:lower():find("merchant", 1, true) and (d:IsA("Model") or d:IsA("BasePart")) then
-					return d, "instances"
-				end
-			end
-		end
-		return nil
-	end
-
 	function DiamondMountain:watchBreakables()
 		local now = os.clock()
 		if self.breakableFolder and now - self.watchCheckedAt < WATCH_CHECK_TTL then return end
@@ -3110,9 +3603,12 @@ local DiamondMountain = (function()
 		local camp = camps and camps:FindFirstChild(tostring(campIndex))
 		if camp then
 			local merchant = camp:FindFirstChild("Merchant")
-			if merchant and merchant:IsA("BasePart") then
-				pos = merchant.Position
-			else
+			if merchant then
+				local part = merchant:IsA("BasePart") and merchant
+					or merchant:FindFirstChildWhichIsA("BasePart", true)
+				if part then pos = part.Position end
+			end
+			if not pos then
 				local wallFront = camp:FindFirstChild("WallFront")
 				if wallFront and wallFront:IsA("BasePart") then pos = wallFront.Position end
 			end
@@ -3335,13 +3831,6 @@ local DiamondMountain = (function()
 		return ids
 	end
 
-	function DiamondMountain:openInventory()
-		local opened = self.network.inventoryOpened
-		if not opened then return false end
-		pcall(opened.FireServer, opened, { "Misc" })
-		return true
-	end
-
 	function DiamondMountain:findCategory(name)
 		local now = os.clock()
 		local cached = self.categoryCache[name]
@@ -3359,16 +3848,6 @@ local DiamondMountain = (function()
 		end
 		self.categoryCache[name] = { instance = found, at = now }
 		return found
-	end
-
-	function DiamondMountain:expandCategory(name)
-		local category = self:findCategory(name)
-		if not category then return false end
-		local items = category:FindFirstChild("Items")
-		if items and #items:GetChildren() > 2 then return true end
-		local title = category:FindFirstChild("Title")
-		local collapse = title and title:FindFirstChild("CollapseButton")
-		return pressButton(collapse)
 	end
 
 	function DiamondMountain:getBoostUuids()
@@ -3562,7 +4041,6 @@ end)()
 
 getgenv().VRT_DiamondMountain = DiamondMountain
 
--- UPDATED: bỏ buyEgg và buySelectedEgg (đã có trong tab Eggs)
 local DM_FEATURES = {
 	{ id = "autoFarm", name = "Auto Farm" },
 	{ id = "autoFarmBest", name = "Auto Farm Best (highest camp)" },
@@ -3571,8 +4049,8 @@ local DM_FEATURES = {
 	{ id = "feedYeti", name = "Feed The Yeti" },
 	{ id = "fillWalls", name = "Fill Rubble Walls" },
 	{ id = "merchant", name = "Buy From Traveling Merchant" },
+	{ id = "claimExpedition", name = "Claim Expeditions (auto)" },
 	{ id = "sendExpedition", name = "Send Pets On Expeditions" },
-	{ id = "claimExpedition", name = "Claim Expeditions" },
 	{ id = "teleportCamp", name = "Teleport To Camp" },
 	{ id = "artifacts", name = "Find Mountain Artifacts" },
 	{ id = "buyUpgrades", name = "Buy Mountain Upgrades" },
@@ -3595,7 +4073,6 @@ local function ensureDmInstance()
 	return instance
 end
 
--- UPDATED: check nhiều nguồn để tránh re-join khi đã trong DM
 local function isInDiamondMountain()
 	local info = getInstanceInfo()
 	if info and info.InstanceId == "DiamondMountain" then
@@ -3605,6 +4082,13 @@ local function isInDiamondMountain()
 	if instance then
 		local mountain = instance:getMountain()
 		if mountain then return true end
+	end
+	local zone = getCurrentZone()
+	if typeof(zone) == "string" then
+		local lower = zone:lower()
+		if lower:find("diamond") or lower:find("mountain") then
+			return true
+		end
 	end
 	local root = getRoot()
 	if root then
@@ -3704,7 +4188,7 @@ local function refreshAllDropdowns()
 		if fruitUpgradeDropdown then fruitUpgradeDropdown:Refresh(buildOptions(getDirectoryIds("Fruits"))) end
 		if enchantRarityDropdown then enchantRarityDropdown:Refresh(buildOptions(getEnchantRarities())) end
 		if eggDropdown then eggDropdown:Refresh(getEggIdList()) end
-		if customEggDropdown then customEggDropdown:Refresh(getCustomEggUuids()) end
+		if customEggDropdown then customEggDropdown:Refresh(getCustomEggOptions()) end
 	end)
 end
 
@@ -3924,16 +4408,20 @@ if tabs.keys then
 		Callback = function(option) settings.SelectedFruits = option; queueSave() end,
 	})
 	tabs.keys:CreateToggle({
-		Name = "Use Selected Fruits (Max)", CurrentValue = settings.ConsumeFruits, Flag = "ConsumeFruits",
+		Name = "Use Selected Fruits (Max per type)", CurrentValue = settings.ConsumeFruits, Flag = "ConsumeFruits",
 		Callback = function(value)
 			settings.ConsumeFruits = value
 			queueSave()
+			vrt.fruitLog = {}
 			if value then startLoop("ConsumeFruits", 3, Core.ConsumeFruits) else stopLoop("ConsumeFruits") end
 		end,
 	})
 	tabs.keys:CreateButton({
-		Name = "Print Fruit Debug",
-		Callback = function() Core.PrintFruitDebug() end,
+		Name = "Force Consume Now (once)",
+		Callback = function()
+			vrt.fruitLog = {}
+			Core.ConsumeFruits()
+		end,
 	})
 
 	tabs.keys:CreateSection("Secret Keys Section")
@@ -4010,15 +4498,18 @@ if tabs.eggs then
 
 	tabs.eggs:CreateSection("Select Egg (Custom / DM)")
 	customEggDropdown = tabs.eggs:CreateDropdown({
-		Name = "Select Custom Egg (DM)",
-		Options = getCustomEggUuids(),
-		CurrentOption = { settings.SelectedCustomEggUuid ~= "" and settings.SelectedCustomEggUuid or (getCustomEggUuids()[1] or "") },
+		Name = "Select Custom Egg (chỉ _hatchable)",
+		Options = getCustomEggOptions(),
+		CurrentOption = { settings.SelectedCustomEggUuid ~= "" and settings.SelectedCustomEggUuid or (getCustomEggOptions()[1] or "") },
 		MultipleOptions = false, Flag = "SelectedCustomEggUuid",
 		Callback = function(option)
-			settings.SelectedCustomEggUuid = option[1]
+			local display = option[1]
+			local info = vrt.customEggMap[display]
+			local uuid = info and info.uid or display
+			settings.SelectedCustomEggUuid = uuid
 			queueSave()
 			if vrt.dmInstance then
-				pcall(function() vrt.dmInstance:setSelectedEgg(option[1]) end)
+				pcall(function() vrt.dmInstance:setSelectedEgg(uuid) end)
 			end
 		end,
 	})
@@ -4030,6 +4521,22 @@ if tabs.eggs then
 			if value then startLoop("BuySelectedCustomEgg", 0.6, Core.BuySelectedCustomEgg) else stopLoop("BuySelectedCustomEgg") end
 		end,
 	})
+	tabs.eggs:CreateButton({
+		Name = "Hatch Selected Custom Egg (once, max)",
+		Callback = function()
+			local uuid = settings.SelectedCustomEggUuid
+			if not uuid or uuid == "" then
+				rayfield:Notify({ Title = "VRT", Content = "Chưa chọn custom egg", Duration = 3 })
+				return
+			end
+			local n = hatchCustomEgg(uuid)
+			rayfield:Notify({
+				Title = "Custom Egg",
+				Content = ("Hatched %d/%d"):format(n, getMaxHatch()),
+				Duration = 4,
+			})
+		end,
+	})
 
 	tabs.eggs:CreateSection("Utility")
 	tabs.eggs:CreateButton({
@@ -4038,27 +4545,6 @@ if tabs.eggs then
 			clearDirectoryCache()
 			refreshAllDropdowns()
 			rayfield:Notify({ Title = "VRT", Content = "Đã refresh dropdowns", Duration = 3 })
-		end,
-	})
-	tabs.eggs:CreateButton({
-		Name = "Print Egg Debug",
-		Callback = function()
-			local eggs = getEggPositions()
-			print(("[VRT] Egg positions: %d"):format(#eggs))
-			local root = getRoot()
-			if root and #eggs > 0 then
-				local closest, closestDist = nil, math.huge
-				for _, egg in ipairs(eggs) do
-					local d = (egg.position - root.Position).Magnitude
-					if d < closestDist then closest, closestDist = egg, d end
-				end
-				if closest then
-					print(("[VRT] Closest egg number: %d"):format(closest.eggNumber))
-					print(("[VRT] Closest egg ID: %s"):format(tostring(getEggIdByNumber(closest.eggNumber))))
-					print(("[VRT] Distance: %.1f"):format(closestDist))
-				end
-			end
-			print(("[VRT] Max hatch: %d"):format(getMaxHatch()))
 		end,
 	})
 end
@@ -4144,9 +4630,11 @@ if tabs.auto then
 			settings.SelectedFlag = option[1]
 			queueSave()
 			vrt.flagWarned = {}
-			vrt.flagDebug = {}
 			vrt.flagInfoWarned = false
 			vrt.flagSuccessLogged = false
+			vrt.flagFailLogged = false
+			flagAutoCache.zoneLog = {}
+			flagAutoCache.failLog = {}
 		end,
 	})
 	tabs.auto:CreateSlider({
@@ -4156,48 +4644,40 @@ if tabs.auto then
 		Callback = function(value) settings.FlagAmount = value; queueSave() end,
 	})
 	tabs.auto:CreateToggle({
-		Name = "Use Selected Flag", CurrentValue = settings.UseSelectedFlag, Flag = "UseSelectedFlag",
+		Name = "Auto Use Flag When In Zone (no teleport)",
+		CurrentValue = settings.AutoUseFlagInZone or false,
+		Flag = "AutoUseFlagInZone",
+		Callback = function(value)
+			settings.AutoUseFlagInZone = value
+			queueSave()
+			flagAutoCache.zoneLog = {}
+			flagAutoCache.failLog = {}
+			flagAutoCache.lastConsume = 0
+			if value then
+				startLoop("AutoUseFlagInZone", 1, Core.AutoUseFlag)
+			else
+				stopLoop("AutoUseFlagInZone")
+			end
+		end,
+	})
+	tabs.auto:CreateToggle({
+		Name = "Use Selected Flag (manual)", CurrentValue = settings.UseSelectedFlag, Flag = "UseSelectedFlag",
 		Callback = function(value)
 			settings.UseSelectedFlag = value
 			queueSave()
 			vrt.flagWarned = {}
-			vrt.flagDebug = {}
 			vrt.flagInfoWarned = false
 			vrt.flagSuccessLogged = false
+			vrt.flagFailLogged = false
 			if value then startLoop("UseSelectedFlag", 2, Core.ActivateFlag) else stopLoop("UseSelectedFlag") end
 		end,
 	})
 	tabs.auto:CreateButton({
-		Name = "Print Flag Info",
-		Callback = function()
-			print(("[VRT] Flags: %d"):format(#FLAGS))
-			for _, flagId in ipairs(FLAGS) do
-				local owned, resolved = Core.GetFlagOwnedAmount(flagId)
-				local max = Core.GetFlagMaxAmount(flagId)
-				print(("[VRT]   %s | resolved=%s | owned=%d | max=%d"):format(
-					flagId, tostring(resolved), owned, max
-				))
-			end
-			local info = getInstanceInfo()
-			if info then
-				print(("[VRT] Instance: %s | Area: %s | Zone: %s"):format(
-					tostring(info.InstanceId or info.instanceId),
-					tostring(info.AreaId or info.areaId),
-					tostring(info.ZoneNumber)
-				))
-			else
-				print("[VRT] Instance info: nil")
-			end
-			print(("[VRT] Slider amount: %d | Game max: %d"):format(
-				settings.FlagAmount or 45, Core.GetFlagGameMax()
-			))
-		end,
-	})
-	tabs.auto:CreateButton({
-		Name = "Use Flag Now (once)",
+		Name = "Use Flag Now (once, no teleport)",
 		Callback = function()
 			vrt.lastFlagAttempt = nil
 			vrt.flagSuccessLogged = false
+			vrt.flagFailLogged = false
 			Core.ActivateFlag()
 		end,
 	})
@@ -4314,7 +4794,6 @@ if tabs.rank then
 end
 
 -- ================= EVENT =================
--- UPDATED: bỏ Auto Join Now, bỏ egg features, fix re-join
 if tabs.event then
 	tabs.event:CreateSection("Diamond Mountain")
 
@@ -4334,36 +4813,100 @@ if tabs.event then
 	})
 
 	tabs.event:CreateButton({
-		Name = "Print Auto Join Debug",
-		Callback = function()
-			print("[VRT] Auto Join Debug:")
-			print("  DMAutoJoin setting:", tostring(settings.DMAutoJoin))
-			print("  Loop running:", tostring(vrt.loops["DMAutoJoin"] ~= nil))
-			print("  isInDiamondMountain():", tostring(isInDiamondMountain()))
-			local info = getInstanceInfo()
-			print("  InstanceId:", tostring(info and info.InstanceId))
-			print("  AreaId:", tostring(info and info.AreaId))
-			local root = getRoot()
-			print("  Character ready:", tostring(root ~= nil))
-			local instance = vrt.dmInstance
-			print("  DM instance:", tostring(instance ~= nil))
-			if instance then
-				local mountain = instance:getMountain()
-				print("  getMountain():", tostring(mountain ~= nil))
-			end
-		end,
-	})
-
-	tabs.event:CreateButton({
 		Name = "Reload Remotes",
 		Callback = function()
-			local instance, err = ensureDmInstance()
+			local instance = ensureDmInstance()
 			if not instance then return end
 			pcall(instance.resolveRemotes, instance)
 			local missing = instance:getMissingRemotes()
 			rayfield:Notify({
 				Title = "Diamond Mountain",
 				Content = #missing == 0 and "Đã resolve đủ remotes." or ("Thiếu: " .. table.concat(missing, ", ")),
+				Duration = 5,
+			})
+		end,
+	})
+
+	tabs.event:CreateSection("Traveling Merchant")
+
+	tabs.event:CreateToggle({
+		Name = "Auto Buy From Merchant (chờ visit mới)",
+		CurrentValue = settings.AutoMerchant or false,
+		Flag = "AutoMerchant",
+		Callback = function(value)
+			settings.AutoMerchant = value
+			queueSave()
+			merchantState.lastVisit = nil
+			merchantState.attempted = false
+			if value then
+				startLoop("AutoMerchant", 10, function()
+					Core.BuyFromMerchant()
+				end)
+			else
+				stopLoop("AutoMerchant")
+			end
+		end,
+	})
+
+	tabs.event:CreateToggle({
+		Name = "Return to original position after buy",
+		CurrentValue = settings.MerchantReturnToPos ~= false,
+		Flag = "MerchantReturnToPos",
+		Callback = function(value)
+			settings.MerchantReturnToPos = value
+			queueSave()
+		end,
+	})
+
+	tabs.event:CreateButton({
+		Name = "Buy From Merchant Now (once)",
+		Callback = function()
+			local result = Core.BuyFromMerchant()
+			rayfield:Notify({
+				Title = "Merchant",
+				Content = tostring(result),
+				Duration = 5,
+			})
+		end,
+	})
+
+	tabs.event:CreateSection("Claim Expedition")
+
+	tabs.event:CreateToggle({
+		Name = "Auto Claim Expedition (teleport + touch)",
+		CurrentValue = settings.AutoClaimExpedition or false,
+		Flag = "AutoClaimExpedition",
+		Callback = function(value)
+			settings.AutoClaimExpedition = value
+			queueSave()
+			expeditionState.lastClaimAt = 0
+			if value then
+				startLoop("AutoClaimExpedition", 5, function()
+					Core.ClaimExpedition()
+				end)
+			else
+				stopLoop("AutoClaimExpedition")
+			end
+		end,
+	})
+
+	tabs.event:CreateToggle({
+		Name = "Fallback: teleport if far touch fails",
+		CurrentValue = settings.ExpeditionFallbackTeleport ~= false,
+		Flag = "ExpeditionFallbackTeleport",
+		Callback = function(value)
+			settings.ExpeditionFallbackTeleport = value
+			queueSave()
+		end,
+	})
+
+	tabs.event:CreateButton({
+		Name = "Claim Expedition Now (once)",
+		Callback = function()
+			local result = Core.ClaimExpedition()
+			rayfield:Notify({
+				Title = "Expedition",
+				Content = tostring(result),
 				Duration = 5,
 			})
 		end,
@@ -4468,26 +5011,6 @@ if tabs.event then
 		end,
 	})
 
-	tabs.event:CreateButton({
-		Name = "Print Farm Info",
-		Callback = function()
-			if not vrt.dmInstance then
-				print("[VRT] Diamond Mountain chưa khởi tạo")
-				return
-			end
-			local ok, info = pcall(vrt.dmInstance.getFarmInfo, vrt.dmInstance)
-			if not ok or typeof(info) ~= "table" then
-				print("[VRT] getFarmInfo error")
-				return
-			end
-			print(("[VRT] Farm Camp    = %s"):format(tostring(info.farmCamp)))
-			print(("[VRT] Pending Camp = %s"):format(tostring(info.pendingCamp)))
-			print(("[VRT] Current Camp = %s"):format(tostring(info.currentCamp)))
-			print(("[VRT] Highest Open = %s"):format(tostring(info.highestOpen)))
-			print(("[VRT] Max Camp     = %s"):format(tostring(info.maxCamp)))
-		end,
-	})
-
 	tabs.event:CreateSection("Features")
 
 	for _, feature in ipairs(DM_FEATURES) do
@@ -4508,39 +5031,6 @@ if tabs.event then
 	end
 
 	tabs.event:CreateSection("Utility")
-
-	tabs.event:CreateButton({
-		Name = "Print Status",
-		Callback = function()
-			if not vrt.dmInstance then
-				print("[VRT] Diamond Mountain chưa khởi tạo")
-				return
-			end
-			local statuses = vrt.dmInstance:getStatus()
-			for id, status in pairs(statuses) do
-				print(("[VRT] %s: %s"):format(id, tostring(status)))
-			end
-		end,
-	})
-
-	tabs.event:CreateButton({
-		Name = "Print Missing Remotes",
-		Callback = function()
-			if not vrt.dmInstance then
-				print("[VRT] Diamond Mountain chưa khởi tạo")
-				return
-			end
-			local missing = vrt.dmInstance:getMissingRemotes()
-			if #missing == 0 then
-				print("[VRT] Đủ remotes.")
-				return
-			end
-			print(("[VRT] Thiếu %d remotes:"):format(#missing))
-			for _, key in ipairs(missing) do
-				print("  " .. key)
-			end
-		end,
-	})
 
 	tabs.event:CreateButton({
 		Name = "Stop All Features",
@@ -4573,19 +5063,6 @@ if tabs.secret then
 	})
 
 	tabs.secret:CreateSection("Anti-Cheat")
-	tabs.secret:CreateButton({
-		Name = "Print AC Status",
-		Callback = function()
-			print(("[VRT] Blunder bypass: %s"):format(AntiCheat.active and "ACTIVE" or "INACTIVE"))
-			print(("[VRT] Original key: %s"):format(AntiCheat.originalKey and "cached" or "none"))
-			print(("[VRT] Blocked count: %d"):format(AntiCheat.blockedCount))
-			if AntiCheat.lastBlocked then
-				print(("[VRT] Last blocked: %s"):format(tostring(AntiCheat.lastBlocked.message)))
-			end
-			local clean, issues = reqCheck()
-			print(("[VRT] Request clean: %s | issues: %s"):format(tostring(clean), table.concat(issues, ",")))
-		end,
-	})
 	tabs.secret:CreateToggle({
 		Name = "Log Blocked AC Messages", CurrentValue = false, Flag = "ACLogBlocked",
 		Callback = function(value) AntiCheat.logBlocked = value end,
@@ -4605,36 +5082,6 @@ if tabs.secret then
 
 	tabs.secret:CreateSection("Performance")
 	tabs.secret:CreateButton({
-		Name = "Print Cache Stats",
-		Callback = function()
-			local save = getSaveCached()
-			local inventorySize = 0
-			if save and typeof(save.Inventory) == "table" then
-				for _, bucket in pairs(save.Inventory) do
-					if typeof(bucket) == "table" then
-						for _ in pairs(bucket) do inventorySize += 1 end
-					end
-				end
-			end
-			print(("[VRT] Save cached: %s"):format(SaveCache.data and "yes" or "no"))
-			print(("[VRT] Inventory size: %d"):format(inventorySize))
-			print(("[VRT] Breakables cached: %d"):format(BreakablePositions.data and #BreakablePositions.data or 0))
-			print(("[VRT] Eggs cached: %d"):format(EggPositions.data and #EggPositions.data or 0))
-			print(("[VRT] ClickAura in range: %d"):format(#clickAuraCache.names))
-			print(("[VRT] Active loops: %d"):format((function()
-				local n = 0
-				for _ in pairs(vrt.loops) do n += 1 end
-				return n
-			end)()))
-			if vrt.dmInstance then
-				print(("[VRT] DM learnDone: %s"):format(vrt.dmInstance.learnDone and "yes" or "no"))
-				print(("[VRT] DM hook active: %s"):format(vrt.dmInstance.hookNamecall and "yes" or "no"))
-			else
-				print("[VRT] DM instance: not created (lazy)")
-			end
-		end,
-	})
-	tabs.secret:CreateButton({
 		Name = "Clear All Caches",
 		Callback = function()
 			invalidateSaveCache()
@@ -4651,6 +5098,13 @@ if tabs.secret then
 			clickAuraCache.names = {}
 			clickAuraCache.rootPos = nil
 			clickAuraCache.timestamp = 0
+			fruitCooldown = {}
+			vrt.fruitLog = {}
+			flagAutoCache.zoneLog = {}
+			flagAutoCache.failLog = {}
+			merchantState.lastVisit = nil
+			merchantState.attempted = false
+			expeditionState.lastClaimAt = 0
 			rayfield:Notify({ Title = "VRT", Content = "Đã xoá tất cả cache", Duration = 3 })
 		end,
 	})
@@ -4724,7 +5178,6 @@ end
 task.spawn(function()
 	task.wait(3)
 	pcall(refreshAllDropdowns)
-	print("[VRT] Dropdowns refreshed.")
 end)
 
 -- -----------------------------------------------------
@@ -4790,10 +5243,11 @@ task.spawn(function()
 	if settings.MailboxClaim then startLoop("MailboxClaim", 10, Core.MailboxClaimAll) end
 	if settings.InfinitePetSpeed then Core.InfinitePetSpeed(true) end
 	if settings.UseSelectedFlag then startLoop("UseSelectedFlag", 2, Core.ActivateFlag) end
+	if settings.AutoUseFlagInZone then startLoop("AutoUseFlagInZone", 1, Core.AutoUseFlag) end
+	if settings.AutoMerchant then startLoop("AutoMerchant", 10, function() Core.BuyFromMerchant() end) end
+	if settings.AutoClaimExpedition then startLoop("AutoClaimExpedition", 5, function() Core.ClaimExpedition() end) end
 	if settings.AdminAbuse then startLoop("AdminAbuse", 5, Core.ClaimFakeCharacters) end
 	if settings.DMAutoJoin then startLoop("DMAutoJoin", 5, autoJoinTick) end
-
-	print("[VRT] Config restored.")
 end)
 
 -- -----------------------------------------------------
@@ -4843,7 +5297,6 @@ getgenv().VRT_Unload = function()
 	pcall(saveConfig)
 	pcall(function() notifyGui:Destroy() end)
 	pcall(function() rayfield:Destroy() end)
-	print("[VRT] Unloaded.")
 end
 
 -- -----------------------------------------------------
