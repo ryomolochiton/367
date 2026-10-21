@@ -1,7 +1,7 @@
 -- =====================================================
--- VRT EXPEDITION DIAGNOSTIC v2 — Save to file (bulletproof)
+-- VRT EXPEDITION DIAGNOSTIC v3 — Timeout-safe
+-- Mọi yielding call đều có timeout, không bao giờ treo
 -- Save -> VRT/VRT_Expedition.txt
--- Mỗi section đều flush ngay, lỗi 1 section không ảnh hưởng section khác
 -- CHẠY KHI ĐANG Ở TRONG DIAMOND MOUNTAIN
 -- =====================================================
 
@@ -16,6 +16,9 @@ local networkFolder = replicatedStorage:FindFirstChild("Network")
 
 local DIAG_FOLDER = "VRT"
 local DIAG_PATH = "VRT/VRT_Expedition.txt"
+
+local SECTION_TIMEOUT = 30
+local CALL_TIMEOUT = 2
 
 pcall(function()
 	if not isfolder(DIAG_FOLDER) then
@@ -53,7 +56,6 @@ local function flush()
 	else
 		warn("[VRT-DIAG] writefile failed: " .. tostring(err))
 		pcall(setclipboard, content)
-		print("[VRT-DIAG] Copied to clipboard instead.")
 		return false
 	end
 end
@@ -67,6 +69,49 @@ end
 local function getRoot()
 	local character = localPlayer.Character
 	return character and character:FindFirstChild("HumanoidRootPart") or nil
+end
+
+-- ===== TIMEOUT WRAPPERS =====
+local function section(name, fn, timeout)
+	sep(name)
+	timeout = timeout or SECTION_TIMEOUT
+	local state = { done = false }
+	task.spawn(function()
+		local ok, err = pcall(fn)
+		if not ok then
+			w(("[SECTION ERROR] " .. tostring(err)))
+		end
+		state.done = true
+	end)
+	local elapsed = 0
+	while not state.done and elapsed < timeout do
+		task.wait(0.1)
+		elapsed += 0.1
+	end
+	if not state.done then
+		w(("[SECTION TIMEOUT] Exceeded " .. timeout .. "s — skipping"))
+	end
+	flush()
+end
+
+local function callWithTimeout(fn, timeout, ...)
+	timeout = timeout or CALL_TIMEOUT
+	local state = { done = false, ok = false, value = nil }
+	task.spawn(function()
+		local ok, res = pcall(fn, ...)
+		state.ok = ok
+		state.value = res
+		state.done = true
+	end)
+	local elapsed = 0
+	while not state.done and elapsed < timeout do
+		task.wait(0.05)
+		elapsed += 0.05
+	end
+	if not state.done then
+		return false, "<TIMEOUT>"
+	end
+	return state.ok, state.value
 end
 
 local function serialize(value, depth, seen)
@@ -165,30 +210,6 @@ local function dumpFunction(label, fn, upDepth)
 	end
 end
 
-local function invoke(name, ...)
-	local network = safeRequire(clientFolder:FindFirstChild("Network"))
-	if not network or not network.Invoke then return false, "no network" end
-	local ok, result = pcall(network.Invoke, name, ...)
-	return ok, result
-end
-
-local function fire(name, ...)
-	local network = safeRequire(clientFolder:FindFirstChild("Network"))
-	if not network or not network.Fire then return false, "no network" end
-	local ok, result = pcall(network.Fire, name, ...)
-	return ok, result
-end
-
--- Wrap section in pcall để 1 section lỗi không kill cả script
-local function section(name, fn)
-	sep(name)
-	local ok, err = pcall(fn)
-	if not ok then
-		w(("[ERROR] " .. tostring(err)))
-	end
-	flush()
-end
-
 -- -----------------------------------------------------
 -- HEADER
 -- -----------------------------------------------------
@@ -201,13 +222,13 @@ section("HEADER", function()
 		local a, b = identifyexecutor()
 		w("Executor:", tostring(a), tostring(b))
 	end)
-
 	local root = getRoot()
 	if root then
 		local p = root.Position
 		w(("Position: %.1f, %.1f, %.1f"):format(p.X, p.Y, p.Z))
 	end
 	w("Save path:", DIAG_PATH)
+	w("Section timeout:", SECTION_TIMEOUT .. "s | Call timeout:", CALL_TIMEOUT .. "s")
 end)
 
 -- -----------------------------------------------------
@@ -258,14 +279,13 @@ section("EXPEDITION STRUCTURE", function()
 			end
 		end
 		w(("  %s (%s)%s"):format(child.Name, child.ClassName, extra))
-		w("    Attributes:")
 		local attrs = child:GetAttributes()
 		local n = 0
 		for k, v in pairs(attrs) do
 			n += 1
 			w(("      %s = %s"):format(tostring(k), serialize(v)))
 		end
-		if n == 0 then w("      (none)") end
+		if n == 0 then w("      (no attributes)") end
 	end
 end)
 
@@ -401,19 +421,18 @@ section("TRIP STATE (Pedestals)", function()
 					w(("  %s [GUI] enabled=%s"):format(d.Name, tostring(d.Enabled)))
 				end
 			end
-			w(("  Attributes:"))
 			local n = 0
 			for k, v in pairs(ped:GetAttributes()) do
 				n += 1
-				w(("    %s = %s"):format(tostring(k), serialize(v)))
+				w(("    attr %s = %s"):format(tostring(k), serialize(v)))
 			end
-			if n == 0 then w("    (none)") end
+			if n == 0 then w("    (no attributes)") end
 		end
 	end
 end)
 
 -- -----------------------------------------------------
--- TEST 1: FEATURE METHODS (no args)
+-- TEST 1: FEATURE METHODS (no args) — with timeout
 -- -----------------------------------------------------
 section("TEST 1 — FEATURE METHODS (no args)", function()
 	if not expeditionFeature then
@@ -425,19 +444,19 @@ section("TEST 1 — FEATURE METHODS (no args)", function()
 		"ClaimExpedition", "ClaimTrip", "ClaimTrips", "ClaimAllTrips",
 		"GetTrips", "GetExpeditions", "GetState", "GetStatus", "GetData",
 		"GetClaimable", "HasClaimable", "CanClaim", "IsClaimable",
-		"Open", "Close",
 	}
 	for _, name in ipairs(methods) do
 		if typeof(expeditionFeature[name]) == "function" then
-			local ok, result = pcall(expeditionFeature[name])
+			local ok, result = callWithTimeout(expeditionFeature[name], 2)
 			w(("[%s] ok=%s result=%s"):format(name, tostring(ok), serialize(result)))
-			task.wait(0.2)
+			flush()
+			task.wait(0.15)
 		end
 	end
 end)
 
 -- -----------------------------------------------------
--- TEST 2: FEATURE METHODS (with args)
+-- TEST 2: FEATURE METHODS (with args) — with timeout
 -- -----------------------------------------------------
 section("TEST 2 — FEATURE METHODS (with args)", function()
 	if not expeditionFeature then
@@ -448,10 +467,11 @@ section("TEST 2 — FEATURE METHODS (with args)", function()
 	for _, name in ipairs({ "Claim", "ClaimTrip", "GetTrip", "GetExpedition" }) do
 		if typeof(expeditionFeature[name]) == "function" then
 			for _, arg in ipairs(args) do
-				local ok, result = pcall(expeditionFeature[name], arg)
+				local ok, result = callWithTimeout(expeditionFeature[name], 2, arg)
 				w(("[%s(%s)] ok=%s result=%s"):format(
 					name, serialize(arg), tostring(ok), serialize(result)
 				))
+				flush()
 				task.wait(0.15)
 			end
 		end
@@ -459,9 +479,9 @@ section("TEST 2 — FEATURE METHODS (with args)", function()
 end)
 
 -- -----------------------------------------------------
--- TEST 3: REMOTES
+-- TEST 3: REMOTES (chỉ check tồn tại, KHÔNG invoke)
 -- -----------------------------------------------------
-section("TEST 3 — REMOTE NAMES", function()
+section("TEST 3 — REMOTE NAMES (check only)", function()
 	if not networkFolder then
 		w("Network folder not found")
 		return
@@ -472,9 +492,6 @@ section("TEST 3 — REMOTE NAMES", function()
 		"DM_Expedition_Claim", "DM_Expedition_Get",
 		"ClaimExpedition", "ClaimTrip", "ClaimExpeditions",
 		"DiamondMountain_ExpeditionClaim",
-		"EventUpgrades: Purchase",
-		"Instancing_InvokeCustomFromClient",
-		"Instancing_FireCustomFromClient",
 	}
 
 	w("-- Checking which remotes exist:")
@@ -494,7 +511,7 @@ section("TEST 3 — REMOTE NAMES", function()
 end)
 
 -- -----------------------------------------------------
--- TEST 4: INVOKE CUSTOM
+-- TEST 4: INVOKE CUSTOM — with timeout
 -- -----------------------------------------------------
 section("TEST 4 — INSTANCE.INVOKECUSTOM", function()
 	local dmCmds = Modules.DiamondMountainCmds
@@ -502,7 +519,7 @@ section("TEST 4 — INSTANCE.INVOKECUSTOM", function()
 		w("Instance not available")
 		return
 	end
-	local okI, inst = pcall(dmCmds.Instance)
+	local okI, inst = callWithTimeout(dmCmds.Instance, 2)
 	if not okI or typeof(inst) ~= "table" or typeof(inst.InvokeCustom) ~= "function" then
 		w("InvokeCustom not available")
 		return
@@ -514,18 +531,19 @@ section("TEST 4 — INSTANCE.INVOKECUSTOM", function()
 		"Expedition", "Claim",
 	}
 	for _, key in ipairs(keys) do
-		local ok, result = pcall(inst.InvokeCustom, key)
+		local ok, result = callWithTimeout(inst.InvokeCustom, 2, key)
 		w(("[InvokeCustom(%q)] ok=%s result=%s"):format(
 			key, tostring(ok), serialize(result)
 		))
-		task.wait(0.2)
+		flush()
+		task.wait(0.15)
 	end
 end)
 
 -- -----------------------------------------------------
--- TEST 5: MACHINESCREENS
+-- TEST 5: MACHINESCREENS — with timeout (FIX)
 -- -----------------------------------------------------
-section("TEST 5 — MACHINESCREENS", function()
+section("TEST 5 — MACHINESCREENS (timeout-safe)", function()
 	local machineScreens = Modules.MachineScreens
 	if not machineScreens then
 		w("MachineScreens not available")
@@ -537,25 +555,28 @@ section("TEST 5 — MACHINESCREENS", function()
 	}
 	for _, id in ipairs(ids) do
 		if typeof(machineScreens.Get) == "function" then
-			local ok, result = pcall(machineScreens.Get, id)
+			local ok, result = callWithTimeout(machineScreens.Get, 2, id)
 			w(("[Get(%q)] ok=%s result=%s"):format(id, tostring(ok), serialize(result)))
+			flush()
 		end
 		if typeof(machineScreens.Has) == "function" then
-			local ok, result = pcall(machineScreens.Has, id)
+			local ok, result = callWithTimeout(machineScreens.Has, 2, id)
 			w(("[Has(%q)] ok=%s result=%s"):format(id, tostring(ok), serialize(result)))
+			flush()
 		end
 		if typeof(machineScreens.IsHere) == "function" then
-			local ok, result = pcall(machineScreens.IsHere, id)
+			local ok, result = callWithTimeout(machineScreens.IsHere, 2, id)
 			w(("[IsHere(%q)] ok=%s result=%s"):format(id, tostring(ok), serialize(result)))
+			flush()
 		end
 		task.wait(0.1)
 	end
 end)
 
 -- -----------------------------------------------------
--- TEST 6: MACHINECMDS
+-- TEST 6: MACHINECMDS — with timeout
 -- -----------------------------------------------------
-section("TEST 6 — MACHINECMDS", function()
+section("TEST 6 — MACHINECMDS (timeout-safe)", function()
 	local machineCmds = Modules.MachineCmds
 	if not machineCmds then
 		w("MachineCmds not available")
@@ -565,10 +586,11 @@ section("TEST 6 — MACHINECMDS", function()
 	for _, id in ipairs(ids) do
 		for _, method in ipairs({ "IsStandingOn", "CanUse", "AllowOpen", "IsAllowedToOpen", "GetUI", "GetModels" }) do
 			if typeof(machineCmds[method]) == "function" then
-				local ok, result = pcall(machineCmds[method], id)
+				local ok, result = callWithTimeout(machineCmds[method], 2, id)
 				w(("[%s(%q)] ok=%s result=%s"):format(
 					method, id, tostring(ok), serialize(result)
 				))
+				flush()
 			end
 		end
 		task.wait(0.1)
@@ -576,7 +598,7 @@ section("TEST 6 — MACHINECMDS", function()
 end)
 
 -- -----------------------------------------------------
--- TEST 7: UI SCAN
+-- TEST 7: UI SCAN (không yield)
 -- -----------------------------------------------------
 section("TEST 7 — UI SCAN (_MACHINES)", function()
 	local playerGui = localPlayer:FindFirstChild("PlayerGui")
@@ -608,7 +630,7 @@ section("TEST 7 — UI SCAN (_MACHINES)", function()
 end)
 
 -- -----------------------------------------------------
--- TEST 8: OPEN EXPEDITION UI + FIRE
+-- TEST 8: OPEN EXPEDITION + FIRE
 -- -----------------------------------------------------
 section("TEST 8 — OPEN EXPEDITION + FIRE", function()
 	local root = getRoot()
@@ -639,13 +661,16 @@ section("TEST 8 — OPEN EXPEDITION + FIRE", function()
 	))
 
 	if expeditionFeature and typeof(expeditionFeature.Open) == "function" then
-		pcall(expeditionFeature.Open)
+		local ok, result = callWithTimeout(expeditionFeature.Open, 3)
+		w(("feature.Open() ok=%s result=%s"):format(tostring(ok), serialize(result)))
 		task.wait(0.5)
-		w("Called feature.Open()")
 	end
 
-	pcall(fire, "MachineScreens_Get", "DiamondMountainExpeditionMachine")
-	task.wait(0.5)
+	local network = Modules.Network
+	if network and network.Fire then
+		pcall(network.Fire, "MachineScreens_Get", "DiamondMountainExpeditionMachine")
+		task.wait(0.5)
+	end
 
 	local playerGui = localPlayer:FindFirstChild("PlayerGui")
 	local machines = playerGui and playerGui:FindFirstChild("_MACHINES")
@@ -689,8 +714,9 @@ section("TEST 8 — OPEN EXPEDITION + FIRE", function()
 	if expeditionFeature then
 		for _, name in ipairs({ "Claim", "ClaimAll", "ClaimRewards", "Collect" }) do
 			if typeof(expeditionFeature[name]) == "function" then
-				local ok, result = pcall(expeditionFeature[name])
+				local ok, result = callWithTimeout(expeditionFeature[name], 2)
 				w(("  [%s] ok=%s result=%s"):format(name, tostring(ok), serialize(result)))
+				flush()
 			end
 		end
 	end
@@ -714,19 +740,13 @@ section("SUMMARY", function()
 	w("=== END ===")
 end)
 
--- Final flush
 local ok = flush()
+print("")
+print("========================================")
 if ok then
-	print("")
-	print("========================================")
 	print("DIAGNOSTIC COMPLETE")
 	print("File saved: " .. DIAG_PATH)
-	print("Mở file này trong folder executor và gửi cho tôi")
-	print("========================================")
 else
-	print("")
-	print("========================================")
 	print("writefile FAILED — content đã copy vào clipboard")
-	print("Paste vào đâu đó và gửi cho tôi")
-	print("========================================")
 end
+print("========================================")
