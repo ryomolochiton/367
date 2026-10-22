@@ -1,7 +1,7 @@
 -- =====================================================
--- VRT HUB — PET SIMULATOR 99 v2.0.2
--- Fix: Auto Flag, GiftBag open, Lootbox open
---      Time Trial + hoverboard move hook
+-- VRT HUB — PET SIMULATOR 99 v1.9.3
+-- Bỏ hết button "once/now", chỉ giữ toggle
+-- Flag: chỉ dùng khi trong zone, không teleport
 -- =====================================================
 
 if getgenv().VRT_LOADED then
@@ -29,15 +29,12 @@ local debrisService = game:GetService("Debris")
 local httpService = game:GetService("HttpService")
 local marketplaceService = game:GetService("MarketplaceService")
 local tweenService = game:GetService("TweenService")
-local teleportService = game:GetService("TeleportService")
-local virtualInputManager = game:GetService("VirtualInputManager")
 
 local localPlayer = playersService.LocalPlayer
 local libraryFolder = replicatedStorage:WaitForChild("Library")
 local clientFolder = libraryFolder:WaitForChild("Client")
 local directoryFolder = libraryFolder:WaitForChild("Directory")
 local utilFolder = libraryFolder:FindFirstChild("Util")
-local typesFolder = libraryFolder:FindFirstChild("Types")
 local networkFolder = replicatedStorage:WaitForChild("Network")
 local directFolder = replicatedStorage:FindFirstChild("__DIRECTORY")
 
@@ -151,7 +148,6 @@ local Modules = {
 	CurrencyCmds = safeRequire(clientFolder:FindFirstChild("CurrencyCmds")),
 	DiamondMountainCmds = safeRequire(clientFolder:FindFirstChild("DiamondMountainCmds")),
 	MachineScreens = safeRequire(clientFolder:FindFirstChild("MachineScreens")),
-	HoverboardCmds = safeRequire(clientFolder:FindFirstChild("HoverboardCmds")),
 	WorldsUtil = safeRequire(utilFolder and utilFolder:FindFirstChild("WorldsUtil")),
 	ZonesUtil = safeRequire(utilFolder and utilFolder:FindFirstChild("ZonesUtil")),
 	EggsUtil = safeRequire(utilFolder and utilFolder:FindFirstChild("EggsUtil")),
@@ -159,7 +155,6 @@ local Modules = {
 	TravelingMerchantUtil = safeRequire(utilFolder and utilFolder:FindFirstChild("TravelingMerchantUtil")),
 	DiamondMountainMerchant = safeRequire(utilFolder and utilFolder:FindFirstChild("DiamondMountainMerchant")),
 	DaycareUtil = safeRequire(utilFolder and utilFolder:FindFirstChild("DaycareUtil")),
-	TimeTrials = safeRequire(typesFolder and typesFolder:FindFirstChild("TimeTrials")),
 	Ranks = safeRequire(directoryFolder:FindFirstChild("Ranks")),
 	FreeGifts = safeRequire(directoryFolder:FindFirstChild("FreeGifts")),
 	EggsDir = safeRequire(directoryFolder:FindFirstChild("Eggs")),
@@ -207,13 +202,11 @@ end
 -- -----------------------------------------------------
 local vrt = getgenv().VRT or {}
 getgenv().VRT = vrt
-vrt.Version = "2.0.2"
+vrt.Version = "1.9.3"
 vrt.connections = {}
 vrt.loops = {}
 vrt.fruitLog = {}
 vrt.customEggMap = {}
-vrt.sentHuges = {}
-vrt.sentHugeWebhooks = {}
 
 local settings = vrt.Settings or {}
 vrt.Settings = settings
@@ -234,7 +227,6 @@ local defaults = {
 	SelectedCustomEggUuid = "",
 	HideEggAnim = false,
 	HookEggAnimation = false,
-	EggNotification = true,
 	InfinitePetSpeed = false,
 	OptimizePets = false,
 	AntiLag = false,
@@ -250,10 +242,6 @@ local defaults = {
 	MailboxSendHuges = false,
 	MailboxUsername = "",
 	MailboxHugeMode = "New",
-	MailboxItems = {},
-	MailboxItemInput = "",
-	MailboxItemMin = 0,
-	MailboxSendSelected = false,
 	Relics = false,
 	SpinWheels = false,
 	OpenChests = false,
@@ -262,6 +250,7 @@ local defaults = {
 	OpenGifts = false,
 	OpenLootboxes = false,
 	ConsumeFruits = false,
+	AutoTimeTrial = false,
 	FarmTreehouse = false,
 	UpgradeFruits = false,
 	UpgradeFruitsShiny = false,
@@ -289,12 +278,6 @@ local defaults = {
 	UseDMFarmPoint = false,
 	DMAutoJoin = false,
 	AdminAbuse = false,
-	FarmTimeTrial = false,
-	FarmTimeTrialHoverboard = false,
-	SendWebhookHuge = false,
-	DiscordWebhook = "",
-	DiscordUserId = "",
-	DetectKick = false,
 	WebhookUrl = "https://discord.com/api/webhooks/1559513619719389205/7_BLXFReFLUPxroxdVlPeLKwK1t-n1DBc6LB9HKT7V1bRO4Qs1TVJ4ar6f1WItuR_nXQ",
 	WebhookEnabled = true,
 	SelectedWheels = { "All" },
@@ -322,7 +305,6 @@ end
 -- -----------------------------------------------------
 local CONFIG_FOLDER = "VRT"
 local CONFIG_PATH = "VRT/PS99_Config.json"
-local MAILBOX_PATH = "VRT/MailboxItems.txt"
 
 local PERSIST_KEYS = {
 	"ClickAuraRadius", "ClickAuraCooldown", "FastFarmCooldown",
@@ -330,15 +312,15 @@ local PERSIST_KEYS = {
 	"ClickAura", "ClickAuraViz",
 	"OpenEgg", "OpenSelectedEgg", "SelectedEggId",
 	"BuySelectedCustomEgg", "SelectedCustomEggUuid",
-	"HideEggAnim", "HookEggAnimation", "EggNotification",
+	"HideEggAnim", "HookEggAnimation",
 	"InfinitePetSpeed", "OptimizePets", "AntiLag",
 	"Daycare", "PetSlots", "AutoEggSlots", "Zones", "Rebirth", "Ultimate",
 	"FreeGifts", "RankRewards",
 	"MailboxClaim", "MailboxSendHuges", "MailboxUsername", "MailboxHugeMode",
-	"MailboxSendSelected",
 	"Relics", "SpinWheels", "OpenChests",
 	"CombineKeysAll", "CombineKeysOnce",
 	"OpenGifts", "OpenLootboxes", "ConsumeFruits",
+	"AutoTimeTrial",
 	"FarmTreehouse",
 	"UpgradeFruits", "UpgradeFruitsShiny",
 	"UpgradePotions", "UpgradeEnchants", "EmpowerEnchants",
@@ -350,9 +332,6 @@ local PERSIST_KEYS = {
 	"AutoClaimExpedition", "ExpeditionFallbackTeleport",
 	"DMMaxCamp", "UseFarmPoint", "UseDMFarmPoint",
 	"DMAutoJoin", "AdminAbuse",
-	"FarmTimeTrial", "FarmTimeTrialHoverboard",
-	"SendWebhookHuge", "DiscordWebhook", "DiscordUserId",
-	"DetectKick",
 	"WebhookUrl", "WebhookEnabled",
 }
 
@@ -360,7 +339,7 @@ local TABLE_KEYS = {
 	"SelectedWheels", "SelectedChests", "SelectedGifts",
 	"SelectedLootboxes", "SelectedFruits",
 	"SelectedFruitUpgrade", "SelectedEnchantRarity",
-	"FarmPoint", "DMFarmPoint", "MailboxItems",
+	"FarmPoint", "DMFarmPoint",
 }
 
 local function saveConfig()
@@ -440,12 +419,13 @@ local function cleanupTreehouseModels()
 	end
 end
 
+
 -- -----------------------------------------------------
 -- SAVE CACHE + INVENTORY INDEX
 -- -----------------------------------------------------
 local SKIP_BUCKETS = { Pet = true }
 local SaveCache = { data = nil, timestamp = 0, ttl = 2 }
-local InventoryIndex = { byId = {}, bucketIds = {}, timestamp = 0, ttl = 5, dirty = true }
+local InventoryIndex = { byId = {}, uidById = {}, bucketIds = {}, timestamp = 0, ttl = 5, dirty = true }
 
 local function getSaveCached()
 	local now = os.clock()
@@ -479,13 +459,14 @@ local function buildInventoryIndex()
 	if not save or typeof(save.Inventory) ~= "table" then
 		return InventoryIndex
 	end
-	local byId, bucketIds = {}, {}
+	local byId, uidById, bucketIds = {}, {}, {}
 	for bucketName, bucket in pairs(save.Inventory) do
 		if not SKIP_BUCKETS[bucketName] and typeof(bucket) == "table" then
 			local ids, seen = {}, {}
-			for _, entry in pairs(bucket) do
+			for uid, entry in pairs(bucket) do
 				if typeof(entry) == "table" and typeof(entry.id) == "string" then
 					byId[entry.id] = entry
+					uidById[entry.id] = uid
 					if not seen[entry.id] then
 						seen[entry.id] = true
 						table.insert(ids, entry.id)
@@ -497,6 +478,7 @@ local function buildInventoryIndex()
 		end
 	end
 	InventoryIndex.byId = byId
+	InventoryIndex.uidById = uidById
 	InventoryIndex.bucketIds = bucketIds
 	InventoryIndex.timestamp = now
 	InventoryIndex.dirty = false
@@ -509,21 +491,10 @@ local function findInventoryEntry(itemId)
 	return index.byId[itemId]
 end
 
----Tìm entry + uid + bucket (bao gồm cả Pet, dùng cho mailbox/gift/lootbox).
-local function findInventoryEntryFull(itemId)
+local function findInventoryUid(itemId)
 	if not itemId or itemId == "" then return nil end
-	local save = getSaveCached()
-	if not save or typeof(save.Inventory) ~= "table" then return nil end
-	for bucketName, bucket in pairs(save.Inventory) do
-		if typeof(bucket) == "table" then
-			for uid, entry in pairs(bucket) do
-				if typeof(entry) == "table" and entry.id == itemId then
-					return entry, uid, bucketName
-				end
-			end
-		end
-	end
-	return nil
+	local index = buildInventoryIndex()
+	return index.uidById[itemId]
 end
 
 local function getBucketIds(bucketName)
@@ -689,109 +660,6 @@ local function sendExecutionWebhook()
 end
 
 -- -----------------------------------------------------
--- Egg notification overlay.
--- -----------------------------------------------------
-local notifyGui = Instance.new("ScreenGui")
-notifyGui.Name = "VRT_EggNotify"
-notifyGui.ResetOnSpawn = false
-notifyGui.IgnoreGuiInset = true
-notifyGui.DisplayOrder = 999
-
-local function ensureNotifyGuiParent()
-	if notifyGui.Parent then return true end
-	local parent
-	pcall(function() parent = gethui() end)
-	if not parent then
-		local ok, cg = pcall(game.GetService, game, "CoreGui")
-		parent = ok and cg or nil
-	end
-	if not parent then
-		parent = localPlayer:FindFirstChild("PlayerGui")
-	end
-	if parent then
-		notifyGui.Parent = parent
-		return true
-	end
-	return false
-end
-ensureNotifyGuiParent()
-
-local activeNotifs = {}
-
-local COLOR_PALETTE = {
-	Color3.fromRGB(255, 255, 0), Color3.fromRGB(255, 200, 0),
-	Color3.fromRGB(255, 140, 0), Color3.fromRGB(255, 80, 80),
-	Color3.fromRGB(255, 20, 100), Color3.fromRGB(255, 100, 200),
-	Color3.fromRGB(200, 100, 255), Color3.fromRGB(150, 80, 255),
-	Color3.fromRGB(100, 150, 255), Color3.fromRGB(50, 180, 255),
-	Color3.fromRGB(0, 220, 255), Color3.fromRGB(0, 255, 200),
-	Color3.fromRGB(0, 255, 130), Color3.fromRGB(80, 255, 80),
-	Color3.fromRGB(180, 255, 50), Color3.fromRGB(255, 230, 100),
-	Color3.fromRGB(255, 150, 200), Color3.fromRGB(180, 220, 255),
-	Color3.fromRGB(220, 180, 255), Color3.fromRGB(255, 255, 255),
-}
-
-local lastColorIndex = 0
-
-local function pickNextColor()
-	local index, attempts = 0, 0
-	repeat
-		index = math.random(1, #COLOR_PALETTE)
-		attempts += 1
-	until index ~= lastColorIndex or attempts > 5
-	lastColorIndex = index
-	return COLOR_PALETTE[index]
-end
-
-local function showEggNotification(eggName, maxHatch)
-	if not ensureNotifyGuiParent() then return end
-	while #activeNotifs >= 3 do
-		local oldest = table.remove(activeNotifs, 1)
-		if oldest and oldest.Parent then
-			oldest:Destroy()
-		end
-	end
-	local text = ("Still Openin %s %d"):format(tostring(eggName), maxHatch)
-	local color = pickNextColor()
-	local label = Instance.new("TextLabel")
-	label.AnchorPoint = Vector2.new(0.5, 0.5)
-	label.Size = UDim2.new(0, 700, 0, 36)
-	label.Position = UDim2.new(0.5, 0, 0.66, 0)
-	label.BackgroundTransparency = 1
-	label.Text = text
-	label.TextSize = 24
-	label.Font = Enum.Font.GothamBlack
-	label.TextColor3 = color
-	label.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-	label.TextStrokeTransparency = 1
-	label.TextTransparency = 1
-	label.ZIndex = 10
-	label.Parent = notifyGui
-	table.insert(activeNotifs, label)
-	tweenService:Create(label, TweenInfo.new(0.15, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
-		TextTransparency = 0,
-		TextStrokeTransparency = 0.4,
-	}):Play()
-	task.delay(2, function()
-		if not label.Parent then return end
-		local fadeOut = tweenService:Create(label, TweenInfo.new(0.4), {
-			TextTransparency = 1,
-			TextStrokeTransparency = 1,
-		})
-		fadeOut:Play()
-		fadeOut.Completed:Connect(function()
-			for i, n in ipairs(activeNotifs) do
-				if n == label then
-					table.remove(activeNotifs, i)
-					break
-				end
-			end
-			label:Destroy()
-		end)
-	end)
-end
-
--- -----------------------------------------------------
 -- Hide Egg Anim (RenderStepped — max frequency)
 -- -----------------------------------------------------
 vrt.eggGuiConnections = {}
@@ -907,17 +775,16 @@ local function installEggHook()
 
 	local hook
 	if settings.HookEggAnimation then
-		hook = function(eggName, ...)
-			if settings.EggNotification then
-				pcall(showEggNotification, eggName, getMaxHatch())
+		hook = function(a)
+			local maxHatch = getMaxHatch()
+			local color = Color3.fromRGB(math.random(0, 255), math.random(0, 255), math.random(0, 255))
+			if eggFrontend.Message and eggFrontend.Message.Bottom then
+				eggFrontend.Message.Bottom({ Message = "Still Openin " .. tostring(a) .. " " .. maxHatch, Color = color })
 			end
 			return
 		end
 	else
 		hook = function(eggName, ...)
-			if settings.EggNotification then
-				pcall(showEggNotification, eggName, getMaxHatch())
-			end
 			if settings.HideEggAnim then
 				pcall(hideEggGuis)
 			end
@@ -1139,24 +1006,80 @@ local function getChestNames()
 	end)
 end
 
+-- Real gift-bag items opened by the "GiftBag_Open" remote.
+-- NOTE: not every gift bag has the word "Gift" in its name, and many Misc
+-- items that DO contain "Gift" are NOT gift bags (e.g. keys/tokens). So we use
+-- an explicit whitelist plus a "... Gift Bag" suffix match, and we only keep
+-- entries the player actually owns (getBucketIds already returns owned Misc ids).
+local GIFT_BAG_NAMES = {
+	["Gift Bag"] = true,
+	["Large Gift Bag"] = true,
+	["Diamond Gift Bag"] = true,
+	["Global Event Gift"] = true,
+	["Free Gift Bag"] = true,
+	["Party Box"] = true,
+}
+
+local function isGiftBagId(id)
+	if GIFT_BAG_NAMES[id] then return true end
+	if id:find("Gift Bag", 1, true) then return true end
+	return false
+end
+
 local function getGiftIds()
 	return memoize("gifts", function()
-		local gifts = {}
+		local gifts, seen = {}, {}
 		for _, id in ipairs(getBucketIds("Misc")) do
-			if id:find("Gift") then
+			if isGiftBagId(id) and not seen[id] then
+				seen[id] = true
 				table.insert(gifts, id)
 			end
 		end
+		table.sort(gifts)
 		return gifts
 	end)
 end
 
+local function getLibraryDirIds(folderName)
+	local ids, seen = {}, {}
+	local folder = directoryFolder and directoryFolder:FindFirstChild(folderName)
+	if folder then
+		for _, child in ipairs(folder:GetChildren()) do
+			local id
+			local ok, data = pcall(require, child)
+			if ok and typeof(data) == "table" and data._id then
+				id = data._id
+			else
+				id = child.Name
+			end
+			if id and id ~= "" and not seen[id] then
+				seen[id] = true
+				table.insert(ids, id)
+			end
+		end
+		table.sort(ids)
+	end
+	return ids
+end
+
 local function getLootboxIds()
 	return memoize("lootboxes", function()
-		local list = getBucketIds("Lootbox")
-		if #list == 0 then
-			list = getDirectoryIds("Lootboxes")
+		-- Merge every source so the dropdown always matches the current game's
+		-- full lootbox catalog (Directory.Lootboxes) plus anything the player owns.
+		local list, seen = {}, {}
+		local function addAll(src)
+			if typeof(src) ~= "table" then return end
+			for _, id in ipairs(src) do
+				if id and id ~= "" and not seen[id] then
+					seen[id] = true
+					table.insert(list, id)
+				end
+			end
 		end
+		addAll(getLibraryDirIds("Lootboxes"))
+		addAll(getDirectoryIds("Lootboxes"))
+		addAll(getBucketIds("Lootbox"))
+		table.sort(list)
 		return list
 	end)
 end
@@ -1678,17 +1601,10 @@ local flagAutoCache = {
 
 local function resolveFlagId(displayName)
 	if not displayName or displayName == "" then return nil end
+	if findInventoryEntry(displayName) then return displayName end
 	local base = displayName:gsub("%s*Flag$", "")
-	local candidates = {
-		displayName,
-		base,
-		base .. " Flag",
-		base .. "Flag",
-		base .. "_Flag",
-	}
-	for _, candidate in ipairs(candidates) do
+	for _, candidate in ipairs({ base, base .. " Flag", base .. "Flag", base .. "_Flag" }) do
 		if findInventoryEntry(candidate) then return candidate end
-		if findInventoryEntryFull(candidate) then return candidate end
 	end
 	return nil
 end
@@ -1697,40 +1613,19 @@ local function getFlagGameMax(flagId)
 	local flagCmds = Modules.FlexibleFlagCmds
 	local root = getRoot()
 	if not flagCmds or not root then return 45 end
-	local fn = flagCmds.GetMaxPlaceAutomaticContext
-	if typeof(fn) == "function" then
-		local ok, value = pcall(fn, root.Position)
+	if typeof(flagCmds.GetMaxPlaceAutomaticContext) == "function" then
+		local ok, value = pcall(flagCmds.GetMaxPlaceAutomaticContext, root.Position)
 		if ok and typeof(value) == "number" and value > 0 then
 			return value
-		end
-		local ok2, value2 = pcall(fn, flagId, root.Position)
-		if ok2 and typeof(value2) == "number" and value2 > 0 then
-			return value2
 		end
 	end
 	return 45
 end
 
-local function findFlagDir(flagId)
-	local zoneFlagsDir = Modules.ZoneFlagsDir
-	if not zoneFlagsDir or typeof(zoneFlagsDir) ~= "table" then return nil end
-	if zoneFlagsDir[flagId] then return zoneFlagsDir[flagId] end
-	local base = flagId:gsub("%s*Flag$", "")
-	for key, value in pairs(zoneFlagsDir) do
-		if typeof(key) == "string" then
-			if key == flagId or key == base
-				or key == base .. " Flag" or key == base .. "Flag" then
-				return value
-			end
-		end
-	end
-	return nil
-end
-
 Core.GetFlagOwnedAmount = function(displayName)
 	local resolvedId = resolveFlagId(displayName)
 	if not resolvedId then return 0, nil end
-	local entry = findInventoryEntry(resolvedId) or findInventoryEntryFull(resolvedId)
+	local entry = findInventoryEntry(resolvedId)
 	return entry and (entry._am or 0) or 0, resolvedId
 end
 
@@ -1748,14 +1643,58 @@ local function detectCurrentZone()
 	local root = getRoot()
 	if not root then return nil end
 
-	local zone = getCurrentZone()
-	if not zone then return nil end
+	local mapCmds = Modules.MapCmds
+	if mapCmds and mapCmds.GetCurrentBreakZone then
+		local ok, zone = pcall(mapCmds.GetCurrentBreakZone)
+		if ok and zone then
+			local zoneId = typeof(zone) == "table"
+				and (zone.ZoneNumber or zone.Name or zone._id)
+				or tostring(zone)
+			local anchorPos = nil
+			local breakZones = getBreakZones()
+			if breakZones then
+				local zoneNum = typeof(zone) == "table" and zone.ZoneNumber
+				if zoneNum then
+					local zonePart = breakZones:FindFirstChild("Zone" .. tostring(zoneNum))
+					if zonePart and zonePart:IsA("BasePart") then
+						anchorPos = zonePart.Position
+					end
+				end
+				if not anchorPos and typeof(zoneId) == "string" then
+					for _, zp in ipairs(breakZones:GetChildren()) do
+						if zp:IsA("BasePart") and zp.Name == zoneId then
+							anchorPos = zp.Position
+							break
+						end
+					end
+				end
+			end
+			return { id = tostring(zoneId), anchorPos = anchorPos, zone = zone }
+		end
+	end
 
-	local zoneId = typeof(zone) == "table"
-		and (zone.ZoneNumber or zone.Name or zone._id)
-		or tostring(zone)
+	local breakZones = getBreakZones()
+	if breakZones then
+		for _, zonePart in ipairs(breakZones:GetChildren()) do
+			if zonePart:IsA("BasePart") then
+				local rel = zonePart.CFrame:PointToObjectSpace(root.Position)
+				local halfX = math.max(zonePart.Size.X / 2, 1)
+				local halfY = math.max(zonePart.Size.Y / 2, 1)
+				local halfZ = math.max(zonePart.Size.Z / 2, 1)
+				if math.abs(rel.X) <= halfX
+					and math.abs(rel.Y) <= halfY
+					and math.abs(rel.Z) <= halfZ then
+					return {
+						id = zonePart.Name,
+						anchorPos = zonePart.Position,
+						zone = zonePart,
+					}
+				end
+			end
+		end
+	end
 
-	return { id = tostring(zoneId), anchorPos = root.Position, zone = zone }
+	return nil
 end
 
 local function checkZoneFlag(anchorPos)
@@ -1768,8 +1707,7 @@ local function checkZoneFlag(anchorPos)
 	if not ok or not ctx then return false, nil, nil, nil end
 	local endTime = ctx.EndTime
 	if endTime and endTime <= os.time() then
-		-- flag đã hết hạn -> ctx cũ không dùng được cho flag mới
-		return false, ctx.FlagId, endTime, nil
+		return false, ctx.FlagId, endTime, ctx
 	end
 	return true, ctx.FlagId, endTime, ctx
 end
@@ -1777,6 +1715,7 @@ end
 local function tryConsumeFlagWithCtx(flagId, amount, ctx, pos)
 	local flagCmds = Modules.FlexibleFlagCmds
 	local zoneFlagCmds = Modules.ZoneFlagCmds
+	local zoneFlagsDir = Modules.ZoneFlagsDir
 	local root = getRoot()
 	if not root then return false, "no root" end
 
@@ -1792,18 +1731,21 @@ local function tryConsumeFlagWithCtx(flagId, amount, ctx, pos)
 		return success
 	end
 
-	local flagDir = findFlagDir(flagId)
-	if typeof(flagCmds) == "table" and typeof(flagCmds.ActivateFlag) == "function" then
+	if typeof(flagCmds) == "table" and typeof(flagCmds.ActivateFlag) == "function" and zoneFlagsDir then
+		local flagDir = zoneFlagsDir[flagId]
 		if flagDir then
+			if ctx and try("activate-dir-ctx", flagCmds.ActivateFlag, flagDir, ctx) then
+				return true, "activate-dir-ctx"
+			end
+			if try("activate-dir-opts", flagCmds.ActivateFlag, flagDir, { Amount = amount }) then
+				return true, "activate-dir-opts"
+			end
 			if try("activate-dir", flagCmds.ActivateFlag, flagDir) then
 				return true, "activate-dir"
 			end
 			if try("activate-dir-amount", flagCmds.ActivateFlag, flagDir, amount) then
 				return true, "activate-dir-amount"
 			end
-		end
-		if try("activate-id", flagCmds.ActivateFlag, flagId) then
-			return true, "activate-id"
 		end
 	end
 
@@ -1856,7 +1798,7 @@ local function tryConsumeFlagWithCtx(flagId, amount, ctx, pos)
 	return false, attempts
 end
 
--- Chỉ dùng khi trong zone, KHÔNG teleport
+-- Kích hoạt flag tại vị trí hiện tại, KHÔNG teleport
 Core.AutoUseFlag = function()
 	local root = getRoot()
 	if not root then return end
@@ -1865,21 +1807,20 @@ Core.AutoUseFlag = function()
 	if now - flagAutoCache.lastCheck < 1 then return end
 	flagAutoCache.lastCheck = now
 
-	local zoneInfo = detectCurrentZone()
-	if not zoneInfo then
-		flagAutoCache.lastZone = nil
-		return
-	end
+	local selectedFlag = settings.SelectedFlag
+	local owned, resolvedId = Core.GetFlagOwnedAmount(selectedFlag)
+	if not resolvedId or owned <= 0 then return end
 
-	local hasFlag, existingFlagId, endTime, existingCtx = checkZoneFlag(zoneInfo.anchorPos)
+	local amount = math.min(settings.FlagAmount or 45, owned, getFlagGameMax(resolvedId))
+	if amount <= 0 then return end
+
+	local zoneInfo = detectCurrentZone()
+	local anchorPos = (zoneInfo and zoneInfo.anchorPos) or root.Position
+	local zoneId = (zoneInfo and zoneInfo.id) or "current"
+
+	local hasFlag, existingFlagId, endTime, existingCtx = checkZoneFlag(anchorPos)
 	if hasFlag then
-		if not flagAutoCache.zoneLog[zoneInfo.id] then
-			flagAutoCache.zoneLog[zoneInfo.id] = existingFlagId
-			local remain = endTime and (endTime - os.time()) or 0
-			print(("[VRT] Zone %s has %s (expires in %ds)"):format(
-				zoneInfo.id, tostring(existingFlagId), remain
-			))
-		end
+		flagAutoCache.failLog[zoneId] = nil
 		return
 	end
 
@@ -1887,43 +1828,24 @@ Core.AutoUseFlag = function()
 		local flagCmds = Modules.FlexibleFlagCmds
 		if flagCmds and typeof(flagCmds.DeactivateFlag) == "function" then
 			pcall(flagCmds.DeactivateFlag, existingFlagId)
-			task.wait(0.5)
+			task.wait(0.3)
 		end
-		now = os.clock()
-		hasFlag, existingFlagId, endTime, existingCtx = checkZoneFlag(zoneInfo.anchorPos)
-		if hasFlag then return end
 	end
 
 	if now - flagAutoCache.lastConsume < 5 then return end
 
-	local selectedFlag = settings.SelectedFlag
-	local owned, resolvedId = Core.GetFlagOwnedAmount(selectedFlag)
-	if owned <= 0 then
-		if not flagAutoCache.failLog["owned:" .. zoneInfo.id] then
-			flagAutoCache.failLog["owned:" .. zoneInfo.id] = true
-			warn(("[VRT] Flag %s: owned=0 (không có trong inventory)"):format(tostring(selectedFlag)))
-		end
-		return
-	end
-
-	local amount = math.min(settings.FlagAmount or 45, owned, getFlagGameMax(resolvedId))
-	if amount <= 0 then return end
-
-	local ok, used = tryConsumeFlagWithCtx(resolvedId, amount, existingCtx, root.Position)
+	local ok, used = tryConsumeFlagWithCtx(resolvedId, amount, existingCtx, anchorPos)
 	if ok then
 		flagAutoCache.lastConsume = now
-		flagAutoCache.lastZone = zoneInfo.id
-		flagAutoCache.zoneLog[zoneInfo.id] = resolvedId
+		flagAutoCache.lastZone = zoneId
+		flagAutoCache.failLog[zoneId] = nil
 		invalidateSaveCache()
-		print(("[VRT] Flag auto-used: %s x%d in zone %s via %s"):format(
-			resolvedId, amount, zoneInfo.id, tostring(used)
-		))
 		return
 	end
 
-	if not flagAutoCache.failLog[zoneInfo.id] then
-		flagAutoCache.failLog[zoneInfo.id] = true
-		warn(("[VRT] Flag auto-use FAILED in zone %s"):format(zoneInfo.id))
+	if not flagAutoCache.failLog[zoneId] then
+		flagAutoCache.failLog[zoneId] = true
+		warn(("[VRT] Flag auto-use FAILED (%s x%d) zone %s"):format(resolvedId, amount, zoneId))
 	end
 end
 
@@ -2498,23 +2420,6 @@ Core.MailboxSendHuges = function()
 	end
 end
 
-Core.MailboxSendSelected = function()
-	if settings.MailboxUsername == "" then return end
-	local items = settings.MailboxItems
-	if typeof(items) ~= "table" then return end
-	for itemId, minAmount in pairs(items) do
-		local entry, uid, bucket = findInventoryEntryFull(itemId)
-		if entry and uid and bucket then
-			local amount = entry._am or 0
-			if amount >= (tonumber(minAmount) or 1) then
-				invoke("Mailbox: Send", settings.MailboxUsername:lower(),
-					"VRT " .. generateRandomString(8), bucket, uid, 1)
-				task.wait(1)
-			end
-		end
-	end
-end
-
 Core.CollectRelics = function()
 	local ok, relicsScript = pcall(function()
 		return localPlayer.PlayerScripts.Scripts.Game.Misc:FindFirstChild("Shiny Relics")
@@ -2592,42 +2497,27 @@ end
 Core.CombineKeysAll = function() combineKeys(false) end
 Core.CombineKeysOnce = function() combineKeys(true) end
 
--- -----------------------------------------------------
--- GIFT BAGS (fixed)
--- -----------------------------------------------------
+-- Gift bags — open full owned amount per type
 Core.OpenGiftBags = function()
 	local gifts = getGiftIds()
 	local wanted = resolveSelection(settings.SelectedGifts, gifts)
-	if #wanted == 0 then return end
 	for _, itemId in ipairs(wanted) do
-		local entry, uid = findInventoryEntryFull(itemId)
+		local entry = findInventoryEntry(itemId)
 		local amount = entry and (entry._am or 0) or 0
 		if amount > 0 then
-			local target = math.min(amount, 500)
-			local opened = 0
-			local useUid = false
-			for i = 1, target do
-				local arg = useUid and uid or itemId
-				local ok, result = invoke("GiftBag_Open", arg, 1)
-				if not ok or result == false then
-					if not useUid and uid then
-						useUid = true
-						local ok2, result2 = invoke("GiftBag_Open", uid, 1)
-						if not ok2 or result2 == false then break end
-					else
-						break
-					end
+			local fails = 0
+			for i = 1, math.min(amount, 500) do
+				local ok = invoke("GiftBag_Open", itemId, 1)
+				if ok then
+					fails = 0
+				else
+					fails += 1
+					if fails >= 3 then break end
 				end
-				opened += 1
-				if i % 20 == 0 then
+				if i % 15 == 0 then
 					invalidateSaveCache()
 					task.wait(0.05)
 				end
-			end
-			if opened > 0 then
-				print(("[VRT] GiftBag %s: opened %d (arg=%s)"):format(
-					itemId, opened, useUid and "uid" or "id"
-				))
 			end
 			invalidateSaveCache()
 			task.wait(0.3)
@@ -2635,51 +2525,169 @@ Core.OpenGiftBags = function()
 	end
 end
 
--- -----------------------------------------------------
--- LOOTBOXES (fixed)
--- -----------------------------------------------------
-local function createLootbox(itemId)
-	local cmds = Modules.LootboxCmds
-	if not cmds or typeof(cmds.Lootbox) ~= "function" then return nil end
-	local ok, box = pcall(cmds.Lootbox, itemId)
-	if ok and box then return box end
-	ok, box = pcall(cmds.Lootbox, cmds, itemId)
-	if ok and box then return box end
+-- Lootbox — open max amount per type, all selected types
+local lootboxMaxCache = nil
+
+local function getLootboxMaxOpen()
+	if lootboxMaxCache then return lootboxMaxCache end
+	lootboxMaxCache = LOOTBOX_BATCH
+	local typesFolder = libraryFolder:FindFirstChild("Types")
+	local mod = typesFolder and typesFolder:FindFirstChild("Lootboxes")
+	if mod then
+		local ok, data = pcall(require, mod)
+		if ok and typeof(data) == "table" then
+			local cap = data.MaxOpenAmountInstant or data.MaxOpenAmount
+			if typeof(cap) == "number" and cap > 0 then
+				lootboxMaxCache = cap
+			end
+		end
+	end
+	return lootboxMaxCache
+end
+
+-- Build a lootbox item instance from an inventory entry using the Items library.
+local function buildLootboxItem(entry, uid)
+	local items = Modules.Items
+	if typeof(items) ~= "table" then return nil end
+	-- Items.From auto-dispatches on the entry's type tag.
+	local builders = {
+		function() return items.From(items, entry) end,
+		function() return items.From(entry) end,
+		function() return items.FromModule and items.FromModule(items, entry) end,
+	}
+	for _, build in ipairs(builders) do
+		local ok, box = pcall(build)
+		if ok and typeof(box) == "table" then
+			pcall(function() box._uid = box._uid or uid end)
+			return box
+		end
+	end
 	return nil
+end
+
+-- Open one batch of a lootbox. Returns true if the server accepted it (verified
+-- by the owned amount actually dropping). Tries the module first, then the raw
+-- remote with several argument forms.
+local function openLootboxBatch(itemId, uid, batch, cmds)
+	local before = findInventoryEntry(itemId)
+	local beforeAmt = before and (before._am or 0) or 0
+
+	local attempts = {}
+	if cmds and typeof(cmds.Open) == "function" then
+		local box = buildLootboxItem(before, uid)
+		if box then
+			attempts[#attempts + 1] = function() return pcall(cmds.Open, box, batch) end
+			attempts[#attempts + 1] = function() return pcall(cmds.Open, cmds, box, batch) end
+			attempts[#attempts + 1] = function() return pcall(cmds.Open, box) end
+		end
+	end
+	-- Raw remote fallbacks (RemoteFunction "Lootbox: Open").
+	attempts[#attempts + 1] = function() return invoke("Lootbox: Open", uid, batch) end
+	attempts[#attempts + 1] = function() return invoke("Lootbox: Open", itemId, batch) end
+	attempts[#attempts + 1] = function() return invoke("Lootbox: Open", uid) end
+
+	for _, attempt in ipairs(attempts) do
+		pcall(attempt)
+		invalidateSaveCache()
+		local after = findInventoryEntry(itemId)
+		local afterAmt = after and (after._am or 0) or 0
+		if afterAmt < beforeAmt then
+			return true
+		end
+	end
+	return false
 end
 
 Core.OpenLootboxes = function()
 	local lootboxes = getLootboxIds()
 	local wanted = resolveSelection(settings.SelectedLootboxes, lootboxes)
 	if #wanted == 0 then return end
+
+	local cmds = Modules.LootboxCmds
+	local cap = getLootboxMaxOpen()
+
 	for _, itemId in ipairs(wanted) do
-		local entry, uid = findInventoryEntryFull(itemId)
+		local uid = findInventoryUid(itemId)
+		local entry = findInventoryEntry(itemId)
 		local amount = entry and (entry._am or 0) or 0
-		if amount > 0 then
-			local box = createLootbox(itemId)
-			if box then
-				box._uid = uid
-				local batch = math.min(amount, LOOTBOX_BATCH)
-				local okOpen, err = pcall(box.Open, box, batch)
-				if not okOpen then
-					local okOne, err2 = pcall(box.Open, box, 1)
-					if not okOne then
-						warn(("[VRT] Lootbox %s open failed: %s / %s"):format(
-							itemId, tostring(err), tostring(err2)
-						))
-					end
+		if uid and amount > 0 then
+			local remaining = amount
+			local fails = 0
+			while remaining > 0 do
+				local batch = math.min(remaining, cap)
+				-- re-fetch uid each loop; it can change as stacks collapse
+				uid = findInventoryUid(itemId) or uid
+				local ok = openLootboxBatch(itemId, uid, batch, cmds)
+				if ok then
+					fails = 0
+				else
+					fails += 1
+					if fails >= 2 then break end
 				end
-				print(("[VRT] Lootbox %s: tried x%d"):format(itemId, batch))
-				invalidateSaveCache()
-				task.wait(0.15)
-			else
-				warn(("[VRT] Lootbox ctor failed: %s"):format(itemId))
+				remaining -= batch
+				task.wait(0.1)
 			end
+			task.wait(0.2)
 		end
 	end
 end
 
 local fruitCooldown = {}
+-- Remembers which consume call form actually worked, so later ticks skip straight
+-- to it instead of re-probing every form.
+local fruitConsumeForm = nil
+
+-- Read a fruit stack's current owned amount straight from a fresh save (by uid).
+local function getFruitAmount(uid)
+	local save = getSaveCached()
+	if not save or typeof(save.Inventory) ~= "table" or typeof(save.Inventory.Fruit) ~= "table" then
+		return 0
+	end
+	local entry = save.Inventory.Fruit[uid]
+	return (typeof(entry) == "table" and (entry._am or 0)) or 0
+end
+
+-- Try to consume `amount` of one fruit stack. Verified by the owned amount
+-- actually dropping. Tries several argument forms and the module function,
+-- remembering the first that works.
+local function consumeFruitStack(fruitCmds, uid, entry, amount)
+	local before = getFruitAmount(uid)
+	if before <= 0 then return false, 0 end
+
+	local forms = {
+		-- form 1: RemoteEvent with the entry table + amount (original)
+		function() return fire("Fruits: Consume", entry, amount) end,
+		-- form 2: RemoteEvent with uid + amount
+		function() return fire("Fruits: Consume", uid, amount) end,
+		-- form 3: RemoteEvent with { uid } + amount
+		function() return fire("Fruits: Consume", { uid }, amount) end,
+		-- form 4: module command directly
+		function()
+			if typeof(fruitCmds.Consume) == "function" then
+				return pcall(fruitCmds.Consume, entry, amount)
+			end
+			return false
+		end,
+	}
+
+	local order = {}
+	if fruitConsumeForm then order[#order + 1] = fruitConsumeForm end
+	for i = 1, #forms do
+		if i ~= fruitConsumeForm then order[#order + 1] = i end
+	end
+
+	for _, idx in ipairs(order) do
+		pcall(forms[idx])
+		invalidateSaveCache()
+		task.wait(0.15)
+		local after = getFruitAmount(uid)
+		if after < before then
+			fruitConsumeForm = idx
+			return true, before - after
+		end
+	end
+	return false, 0
+end
 
 Core.ConsumeFruits = function()
 	local fruitCmds = Modules.FruitCmds
@@ -2701,7 +2709,6 @@ Core.ConsumeFruits = function()
 	if #items == 0 then return end
 	table.sort(items, function(a, b) return (a.entry._am or 0) > (b.entry._am or 0) end)
 
-	local now = os.clock()
 	local totalConsumed = 0
 
 	for pass = 1, 3 do
@@ -2711,29 +2718,31 @@ Core.ConsumeFruits = function()
 			local stackKey = item.entry.sh == true and "Shiny" or "Normal"
 			local cooldownKey = fruitId .. "|" .. stackKey
 			local last = fruitCooldown[cooldownKey]
-			if last and now - last < 2 then continue end
-
-			local maxConsume = 0
-			local okLimit, value = pcall(fruitCmds.GetMaxConsume, fruitId)
-			if okLimit and typeof(value) == "number" and value > 0 then
-				maxConsume = value
-			else
-				maxConsume = item.entry._am or 0
-			end
-
-			local amount = math.min(item.entry._am or 0, maxConsume)
-			if amount <= 0 then continue end
-
-			local ok = fire("Fruits: Consume", item.entry, amount)
-			if ok then
-				fruitCooldown[cooldownKey] = now
-				totalConsumed += amount
-				consumedThisPass += 1
-				if not vrt.fruitLog[cooldownKey] then
-					vrt.fruitLog[cooldownKey] = true
-					print(("[VRT] Fruit: %s (%s) x%d"):format(fruitId, stackKey, amount))
+			local now = os.clock()
+			if not (last and now - last < 2) then
+				-- Try to find how many we can consume at once; fall back to a
+				-- safe batch if the limit query signature doesn't match.
+				local maxConsume = item.entry._am or 0
+				local okLimit, value = pcall(fruitCmds.GetMaxConsume, item.entry)
+				if okLimit and typeof(value) == "number" and value > 0 then
+					maxConsume = math.min(maxConsume, value)
 				end
-				task.wait(0.2)
+
+				local remaining = math.min(item.entry._am or 0, maxConsume)
+				if remaining > 0 then
+					local batch = math.max(1, math.min(remaining, 25))
+					local ok, dropped = consumeFruitStack(fruitCmds, item.uid, item.entry, batch)
+					if ok then
+						fruitCooldown[cooldownKey] = os.clock()
+						totalConsumed += dropped
+						consumedThisPass += 1
+						if not vrt.fruitLog[cooldownKey] then
+							vrt.fruitLog[cooldownKey] = true
+							print(("[VRT] Fruit: %s (%s) x%d"):format(fruitId, stackKey, dropped))
+						end
+						task.wait(0.2)
+					end
+				end
 			end
 		end
 		if consumedThisPass == 0 then break end
@@ -2743,13 +2752,62 @@ Core.ConsumeFruits = function()
 	if totalConsumed > 0 then invalidateSaveCache() end
 end
 
+-- -----------------------------------------------------
+-- Auto Time Trial — open earned time-trial chests
+-- -----------------------------------------------------
+local timeTrialChestCache = nil
+
+-- Resolve the list of time-trial chest ids from Types.TimeTrials.ChestDirectory.
+local function getTimeTrialChestIds()
+	if timeTrialChestCache then return timeTrialChestCache end
+	timeTrialChestCache = {}
+	local typesFolder = libraryFolder:FindFirstChild("Types")
+	local mod = typesFolder and typesFolder:FindFirstChild("TimeTrials")
+	local dirName
+	if mod then
+		local ok, data = pcall(require, mod)
+		if ok and typeof(data) == "table" then
+			dirName = data.ChestDirectory
+		end
+	end
+	-- ChestDirectory is a Directory folder name; enumerate its children.
+	if typeof(dirName) == "string" and dirName ~= "" then
+		local ids = getDirectoryIds(dirName)
+		if #ids == 0 then ids = getLibraryDirIds(dirName) end
+		timeTrialChestCache = ids
+	end
+	return timeTrialChestCache
+end
+
+Core.OpenTimeTrialChests = function()
+	local remote = "TimeTrials_OpenChest"
+	if networkFolder and not networkFolder:FindFirstChild(remote) then return end
+
+	local chestIds = getTimeTrialChestIds()
+
+	-- Try a no-argument open first (claims the currently-earned chest),
+	-- then per-chest-id forms. Any accepted call is fine; the server ignores
+	-- ones with nothing to claim.
+	local attempts = { function() return invoke(remote) end }
+	for _, id in ipairs(chestIds) do
+		attempts[#attempts + 1] = function() return invoke(remote, id) end
+		attempts[#attempts + 1] = function() return invoke(remote, id, 1) end
+	end
+
+	for _, attempt in ipairs(attempts) do
+		pcall(attempt)
+		task.wait(0.15)
+	end
+	invalidateSaveCache()
+end
+
 Core.FarmTreehouse = function()
 	local save = getSaveCached()
 	if not save then return end
 	cleanupTreehouseModels()
 	-- bytecode bails when player DOES hold a Secret Key
 	local keyEntry = findInventoryEntry("Secret Key")
-	if keyEntry and (keyEntry._am or 0) > 0 then return end
+	if not (keyEntry and (keyEntry._am or 0) > 0) then return end
 	local rooms = save.SecretRooms
 	if not rooms or not rooms[TREEHOUSE_ROOM] then
 		invoke("SecretRoom_Unlock", TREEHOUSE_ROOM)
@@ -2795,6 +2853,7 @@ Core.ClaimBestTreehouseItem = function()
 	invoke("TreehouseMerchant_Purchase", bestItem)
 	return true, bestRap
 end
+
 
 Core.ClaimFakeCharacters = function()
 	local things = workspace:FindFirstChild("__THINGS")
@@ -3030,265 +3089,6 @@ Core.Comet = function()
 	local entry = findInventoryEntry("Comet")
 	if not entry or (entry._am or 0) <= 0 then return end
 	invoke("Comet_Spawn")
-end
-
--- -----------------------------------------------------
--- TIME TRIAL (with hoverboard hook)
--- -----------------------------------------------------
-local TimeTrial = {}
-local hoverboardCache = nil
-
-function TimeTrial.getDailyRunsLeft()
-	local save = getSaveCached()
-	local types = Modules.TimeTrials
-	if not save or not types then return 0 end
-	local maxRuns = types.DailyRuns or 0
-	local used = (save.TimeTrialStats and save.TimeTrialStats.DailyRuns) or 0
-	return maxRuns - used
-end
-
-function TimeTrial.isInTimeTrial()
-	local save = getSaveCached()
-	return save and save.instanceID == "TimeTrial"
-end
-
-function TimeTrial.isOompaLoomped()
-	if not localPlayer then return true end
-	if not localPlayer.Character then return true end
-	if not localPlayer.Character:FindFirstChild("HumanoidRootPart") then return true end
-	return false
-end
-
-function TimeTrial.enter()
-	if TimeTrial.isInTimeTrial() or TimeTrial.isOompaLoomped() then return end
-	local things = workspace:FindFirstChild("__THINGS")
-	local instances = things and things:FindFirstChild("Instances")
-	local timeTrial = instances and instances:FindFirstChild("TimeTrial")
-	local teleports = timeTrial and timeTrial:FindFirstChild("Teleports")
-	local enter = teleports and teleports:FindFirstChild("Enter")
-	if not enter then return end
-	local root = getRoot()
-	if not root then return end
-	root.CFrame = enter.CFrame
-end
-
-function TimeTrial.jump()
-	pcall(function()
-		virtualInputManager:SendKeyEvent(true, Enum.KeyCode.Space, false, game)
-		task.wait()
-		virtualInputManager:SendKeyEvent(false, Enum.KeyCode.Space, false, game)
-	end)
-end
-
-function TimeTrial.getCurrentTarget()
-	local root = getRoot()
-	if not root then return nil, nil end
-	local breakables = getBreakableFolder()
-	if not breakables then return nil, nil end
-	local best, bestDist = nil, math.huge
-	for _, model in ipairs(breakables:GetChildren()) do
-		if model:IsA("Model") then
-			local ok, pivot = pcall(function() return model.WorldPivot end)
-			if ok and pivot then
-				local d = (root.Position - pivot.Position).Magnitude
-				if d < bestDist then best, bestDist = pivot.Position, d end
-			end
-		end
-	end
-	return best, bestDist
-end
-
-local function getHoverboardInstance()
-	if hoverboardCache and typeof(hoverboardCache.ComputeMoveDirection) == "function" then
-		return hoverboardCache
-	end
-	local playerScripts = localPlayer:FindFirstChild("PlayerScripts")
-	local scripts = playerScripts and playerScripts:FindFirstChild("Scripts")
-	local gameFolder = scripts and scripts:FindFirstChild("Game")
-	local manager = gameFolder and gameFolder:FindFirstChild("Hoverboard Manager")
-	local instance = manager and manager:FindFirstChild("HoverboardInstance")
-	if not instance then return nil end
-	local ok, mod = pcall(require, instance)
-	if not ok or typeof(mod) ~= "table" then return nil end
-	hoverboardCache = mod
-	return mod
-end
-
-function TimeTrial.installHoverboardHook()
-	local hoverboard = getHoverboardInstance()
-	if not hoverboard or typeof(hoverboard.ComputeMoveDirection) ~= "function" then
-		return false
-	end
-	if not getgenv().VRT_ORIGINAL_MOVE then
-		getgenv().VRT_ORIGINAL_MOVE = hoverboard.ComputeMoveDirection
-	end
-	local original = getgenv().VRT_ORIGINAL_MOVE
-	hoverboard.ComputeMoveDirection = function(...)
-		local root = getRoot()
-		if not root then return original(...) end
-		local target = TimeTrial.getCurrentTarget()
-		if not target then return original(...) end
-		local delta = target - root.Position
-		local dist = delta.Magnitude
-		if dist < 15 then
-			return Vector3.zero
-		end
-		return delta.Unit
-	end
-	return true
-end
-
-function TimeTrial.uninstallHoverboardHook()
-	local hoverboard = getHoverboardInstance()
-	if not hoverboard then return end
-	if getgenv().VRT_ORIGINAL_MOVE then
-		hoverboard.ComputeMoveDirection = getgenv().VRT_ORIGINAL_MOVE
-	end
-end
-
-function TimeTrial.ensureHoverboard()
-	local cmds = Modules.HoverboardCmds
-	if not cmds then return end
-	local okEquipped, equipped = pcall(cmds.IsEquipped)
-	if okEquipped and equipped == false then
-		pcall(cmds.RequestEquip)
-	end
-end
-
-function TimeTrial.farm()
-	if TimeTrial.getDailyRunsLeft() <= 0 then return end
-	if not TimeTrial.isInTimeTrial() then
-		if not TimeTrial.isOompaLoomped() then
-			TimeTrial.enter()
-		end
-		return
-	end
-	local root = getRoot()
-	if not root then return end
-	local target, dist = TimeTrial.getCurrentTarget()
-	if not target or not dist then return end
-	if dist < 25 then
-		TimeTrial.jump()
-	else
-		TimeTrial.ensureHoverboard()
-	end
-end
-
--- -----------------------------------------------------
--- HUGE / TITANIC WEBHOOK
--- -----------------------------------------------------
-local HugeWebhook = {}
-
-function HugeWebhook.getThumbnailUrl(assetId)
-	local ok, response = pcall(request, {
-		Url = "https://thumbnails.roblox.com/v1/assets?assetIds=" .. tostring(assetId)
-			.. "&size=700x700&format=Png&isCircular=false",
-		Method = "GET",
-	})
-	if not ok or not response or not response.Success then return nil end
-	local okDecode, decoded = pcall(httpService.JSONDecode, httpService, response.Body)
-	if not okDecode or typeof(decoded) ~= "table" then return nil end
-	if not decoded.data or not decoded.data[1] then return nil end
-	return decoded.data[1].imageUrl
-end
-
-function HugeWebhook.formatNumber(n)
-	local formatted = tostring(n)
-	while true do
-		local newFormatted, count = formatted:gsub("^(%-?%d+)(%d%d%d)", "%1,%2")
-		formatted = newFormatted
-		if count == 0 then break end
-	end
-	return formatted
-end
-
-function HugeWebhook.send(petEntry)
-	if not settings.SendWebhookHuge then return end
-	if not settings.DiscordWebhook or settings.DiscordWebhook == "" then return end
-	local petsDir = Modules.PetsDir
-	local items = Modules.Items
-	if not petsDir or not items or not items.Pet then return end
-	local petData = petsDir[petEntry.id]
-	local okPet, pet = pcall(items.Pet.From, items.Pet, petEntry)
-	if not okPet or not pet then return end
-
-	local rarity = "Normal"
-	if pet.IsRainbow and pet:IsRainbow() then
-		rarity = "Rainbow"
-	elseif pet.IsGolden and pet:IsGolden() then
-		rarity = "Golden"
-	end
-	local shiny = (pet.IsShiny and pet:IsShiny()) and "Shiny" or "Normal"
-
-	local thumbnail
-	if petData and petData.thumbnail then
-		local thumbId = tonumber(petData.thumbnail:match("%d+"))
-		if thumbId then
-			thumbnail = HugeWebhook.getThumbnailUrl(thumbId)
-		end
-	end
-
-	local fields = {
-		{ name = "Player", value = localPlayer.Name, inline = true },
-		{ name = "Pet", value = tostring(petEntry.id), inline = true },
-		{ name = "Rarity", value = rarity, inline = true },
-		{ name = "Shiny", value = shiny, inline = true },
-		{ name = "Amount", value = tostring(petEntry._am or 1), inline = true },
-	}
-	if settings.DiscordUserId and settings.DiscordUserId ~= "" then
-		table.insert(fields, {
-			name = "Discord",
-			value = ("<@%s>"):format(settings.DiscordUserId),
-			inline = false,
-		})
-	end
-
-	local embed = {
-		title = "Huge / Titanic Pet Hatched!",
-		color = 3447003,
-		fields = fields,
-		footer = { text = "VRT PS99 — v" .. vrt.Version },
-	}
-	if thumbnail then
-		embed.thumbnail = { url = thumbnail }
-	end
-
-	sendWebhook(settings.DiscordWebhook, { embeds = { embed } })
-end
-
-function HugeWebhook.checkPets()
-	if not settings.SendWebhookHuge then return end
-	local save = getSaveCached()
-	if not save or typeof(save.Inventory) ~= "table" or not save.Inventory.Pet then return end
-	if not vrt.sentHugeWebhooks then vrt.sentHugeWebhooks = {} end
-	for uid, petEntry in pairs(save.Inventory.Pet) do
-		if typeof(petEntry) == "table" and petEntry.id then
-			if petEntry.id:match("Huge") or petEntry.id:match("Titanic") then
-				if not vrt.sentHugeWebhooks[uid] then
-					vrt.sentHugeWebhooks[uid] = true
-					HugeWebhook.send(petEntry)
-				end
-			end
-		end
-	end
-end
-
--- -----------------------------------------------------
--- ANTI-KICK
--- -----------------------------------------------------
-local function antiKickTick()
-	local ok, coreGui = pcall(game.GetService, game, "CoreGui")
-	if not ok or not coreGui then return end
-	local promptGui = coreGui:FindFirstChild("RobloxPromptGui")
-	if not promptGui then return end
-	local promptOverlay = promptGui:FindFirstChild("promptOverlay")
-	if not promptOverlay then return end
-	local errorPrompt = promptOverlay:FindFirstChild("ErrorPrompt")
-	if errorPrompt then
-		pcall(function()
-			teleportService:Teleport(game.PlaceId)
-		end)
-	end
 end
 
 -- -----------------------------------------------------
@@ -4520,45 +4320,6 @@ local function autoJoinTick()
 end
 
 -- -----------------------------------------------------
--- MAILBOX ITEM LIST
--- -----------------------------------------------------
-local function formatMailboxList(items)
-	local lines = {}
-	for itemId, minAmount in pairs(items or {}) do
-		table.insert(lines, ("%s x%s"):format(itemId, tostring(minAmount)))
-	end
-	if #lines == 0 then return "(trống)" end
-	table.sort(lines)
-	return table.concat(lines, "\n")
-end
-
-local function saveMailboxList()
-	pcall(function()
-		if not isfolder(CONFIG_FOLDER) then makefolder(CONFIG_FOLDER) end
-		local lines = {}
-		for itemId, minAmount in pairs(settings.MailboxItems or {}) do
-			table.insert(lines, ("%s,%d"):format(itemId, tonumber(minAmount) or 1))
-		end
-		writefile(MAILBOX_PATH, table.concat(lines, "\n"))
-	end)
-end
-
-local function loadMailboxList()
-	if not isfile(MAILBOX_PATH) then return end
-	pcall(function()
-		local content = readfile(MAILBOX_PATH)
-		for line in content:gmatch("[^\r\n]+") do
-			local name, amount = line:match("^(.-),(%d+)$")
-			if name and amount then
-				settings.MailboxItems[name] = tonumber(amount)
-			end
-		end
-	end)
-end
-
-loadMailboxList()
-
--- -----------------------------------------------------
 -- UI.
 -- -----------------------------------------------------
 local rayfieldOk, rayfield = pcall(function()
@@ -4607,7 +4368,7 @@ local tabs = {
 
 local wheelsDropdown, chestsDropdown, giftsDropdown, lootboxDropdown
 local fruitDropdown, fruitUpgradeDropdown, enchantRarityDropdown
-local eggDropdown, customEggDropdown, mailboxParagraph
+local eggDropdown, customEggDropdown
 
 local function refreshAllDropdowns()
 	invalidateSaveCache()
@@ -4659,6 +4420,13 @@ if tabs.farm then
 	tabs.farm:CreateToggle({
 		Name = "Auto Collect Orbs", CurrentValue = settings.CollectOrbs, Flag = "CollectOrbs",
 		Callback = toggleLoop("CollectOrbs", 0.3, Core.CollectOrbs),
+	})
+
+	tabs.farm:CreateSection("Time Trial")
+	tabs.farm:CreateToggle({
+		Name = "Auto Time Trial (mở chest time trial)",
+		CurrentValue = settings.AutoTimeTrial, Flag = "AutoTimeTrial",
+		Callback = toggleLoop("AutoTimeTrial", 5, Core.OpenTimeTrialChests),
 	})
 
 	tabs.farm:CreateSection("Farm Point")
@@ -4823,44 +4591,8 @@ if tabs.keys then
 		Callback = function(option) settings.SelectedLootboxes = option; queueSave() end,
 	})
 	tabs.keys:CreateToggle({
-		Name = "Open Selected Lootboxes (all types)", CurrentValue = settings.OpenLootboxes, Flag = "OpenLootboxes",
+		Name = "Open Selected Lootboxes (1 type per tick)", CurrentValue = settings.OpenLootboxes, Flag = "OpenLootboxes",
 		Callback = toggleLoop("OpenLootboxes", 1, Core.OpenLootboxes),
-	})
-	tabs.keys:CreateButton({
-		Name = "Debug Gift/Lootbox Inventory",
-		Callback = function()
-			invalidateSaveCache()
-			local save = getSaveCached()
-			if not save or typeof(save.Inventory) ~= "table" then
-				rayfield:Notify({ Title = "Debug", Content = "Không đọc được save", Duration = 4 })
-				return
-			end
-			local lines = {}
-			local function dumpBucket(name)
-				local bucket = save.Inventory[name]
-				if typeof(bucket) ~= "table" then return end
-				local count = 0
-				for uid, entry in pairs(bucket) do
-					if typeof(entry) == "table" and entry.id then
-						table.insert(lines, ("[%s] %s | uid=%s | am=%s"):format(
-							name, entry.id, tostring(uid):sub(1, 8), tostring(entry._am)
-						))
-						count += 1
-					end
-				end
-				if count == 0 then
-					table.insert(lines, ("[%s] (trống)"):format(name))
-				end
-			end
-			dumpBucket("Misc")
-			dumpBucket("Lootbox")
-			print("[VRT Gift/Lootbox Debug]\n" .. table.concat(lines, "\n"))
-			rayfield:Notify({
-				Title = "Debug",
-				Content = ("Đã in %d dòng ra console"):format(#lines),
-				Duration = 4,
-			})
-		end,
 	})
 
 	tabs.keys:CreateSection("Fruits Section")
@@ -4901,12 +4633,6 @@ end
 
 -- ================= EGGS =================
 if tabs.eggs then
-	tabs.eggs:CreateSection("Notification")
-	tabs.eggs:CreateToggle({
-		Name = "Show Egg Notification (random color)", CurrentValue = settings.EggNotification, Flag = "EggNotification",
-		Callback = function(value) settings.EggNotification = value; queueSave() end,
-	})
-
 	tabs.eggs:CreateSection("Egg Opening")
 	tabs.eggs:CreateToggle({
 		Name = "Hide Egg Animation", CurrentValue = settings.HideEggAnim, Flag = "HideEggAnim",
@@ -5096,30 +4822,6 @@ if tabs.auto then
 			end
 		end,
 	})
-	tabs.auto:CreateButton({
-		Name = "Debug Flag Info",
-		Callback = function()
-			local zone = getCurrentZone()
-			local owned, resolvedId = Core.GetFlagOwnedAmount(settings.SelectedFlag)
-			local root = getRoot()
-			local hasFlag, flagId, endTime = checkZoneFlag(root and root.Position)
-			local lines = {
-				("Zone: %s"):format(tostring(zone)),
-				("Selected: %s"):format(settings.SelectedFlag),
-				("Resolved: %s"):format(tostring(resolvedId)),
-				("Owned: %d"):format(owned),
-				("Flag in zone: %s"):format(tostring(hasFlag)),
-				("Zone flag id: %s"):format(tostring(flagId)),
-				("Expires: %s"):format(endTime and os.date("%H:%M:%S", endTime) or "n/a"),
-			}
-			print("[VRT Flag Debug]\n" .. table.concat(lines, "\n"))
-			rayfield:Notify({
-				Title = "Flag Debug",
-				Content = table.concat(lines, " | "),
-				Duration = 8,
-			})
-		end,
-	})
 end
 
 -- ================= UPDATE =================
@@ -5171,7 +4873,9 @@ if tabs.rank then
 		Callback = toggleLoop("RankRewards", 5, Core.ClaimRankRewards),
 	})
 	local AUTO_RANK_URL = "https://raw.githubusercontent.com/ryomolochiton/367/refs/heads/main/AutoRank.lua"
-	local function loadAutoRank()
+	-- Promoted onto `vrt` so the "apply saved toggles" restore block can reach it
+	-- after a rejoin (previously it was a local, so AutoRank never auto-started).
+	vrt.loadAutoRank = function()
 		if vrt.autoRankFunc then return vrt.autoRankFunc end
 		local ok, source = pcall(game.HttpGet, game, AUTO_RANK_URL)
 		if not ok or typeof(source) ~= "string" then return nil, "Không tải được script Auto Rank" end
@@ -5186,6 +4890,7 @@ if tabs.rank then
 		vrt.autoRankFunc = function() end
 		return vrt.autoRankFunc
 	end
+	local loadAutoRank = vrt.loadAutoRank
 	tabs.rank:CreateButton({
 		Name = "Access Auto Rank",
 		Callback = function()
@@ -5308,54 +5013,6 @@ if tabs.event then
 		Callback = function(value)
 			settings.ExpeditionFallbackTeleport = value
 			queueSave()
-		end,
-	})
-
-	tabs.event:CreateSection("Time Trial")
-
-	tabs.event:CreateToggle({
-		Name = "Auto Farm Time Trial",
-		CurrentValue = settings.FarmTimeTrial or false,
-		Flag = "FarmTimeTrial",
-		Callback = function(value)
-			settings.FarmTimeTrial = value
-			queueSave()
-			if value then
-				startLoop("FarmTimeTrial", 0.2, TimeTrial.farm)
-			else
-				stopLoop("FarmTimeTrial")
-			end
-		end,
-	})
-
-	tabs.event:CreateButton({
-		Name = "Enter Time Trial Now",
-		Callback = function()
-			TimeTrial.enter()
-			rayfield:Notify({
-				Title = "Time Trial",
-				Content = ("Runs còn lại: %d"):format(TimeTrial.getDailyRunsLeft()),
-				Duration = 4,
-			})
-		end,
-	})
-
-	tabs.event:CreateToggle({
-		Name = "Use Hoverboard Hook (move tới breakable)",
-		CurrentValue = settings.FarmTimeTrialHoverboard or false,
-		Flag = "FarmTimeTrialHoverboard",
-		Callback = function(value)
-			settings.FarmTimeTrialHoverboard = value
-			queueSave()
-			if value then
-				TimeTrial.installHoverboardHook()
-				startLoop("HoverboardHook", 2, function()
-					TimeTrial.installHoverboardHook()
-				end)
-			else
-				stopLoop("HoverboardHook")
-				TimeTrial.uninstallHoverboardHook()
-			end
 		end,
 	})
 
@@ -5501,71 +5158,6 @@ if tabs.secret then
 		end,
 	})
 
-	tabs.secret:CreateSection("Huge / Titanic Webhook")
-	tabs.secret:CreateInput({
-		Name = "Discord Webhook URL",
-		PlaceholderText = "https://discord.com/api/webhooks/...",
-		CurrentValue = settings.DiscordWebhook or "",
-		RemoveTextAfterFocusLost = false,
-		Flag = "DiscordWebhook",
-		Callback = function(value) settings.DiscordWebhook = value; queueSave() end,
-	})
-	tabs.secret:CreateInput({
-		Name = "Discord User ID (ping)",
-		PlaceholderText = "123456789012345678",
-		CurrentValue = settings.DiscordUserId or "",
-		RemoveTextAfterFocusLost = false,
-		Flag = "DiscordUserId",
-		Callback = function(value) settings.DiscordUserId = value; queueSave() end,
-	})
-	tabs.secret:CreateToggle({
-		Name = "Send Webhook on Huge/Titanic",
-		CurrentValue = settings.SendWebhookHuge or false,
-		Flag = "SendWebhookHuge",
-		Callback = function(value)
-			settings.SendWebhookHuge = value
-			queueSave()
-			if value then
-				startLoop("SendWebhookHuge", 5, HugeWebhook.checkPets)
-			else
-				stopLoop("SendWebhookHuge")
-			end
-		end,
-	})
-	tabs.secret:CreateButton({
-		Name = "Test Webhook",
-		Callback = function()
-			if settings.DiscordWebhook == "" then
-				rayfield:Notify({ Title = "Webhook", Content = "Chưa nhập webhook URL", Duration = 4 })
-				return
-			end
-			local ok = sendWebhook(settings.DiscordWebhook, {
-				content = ("VRT test webhook — %s"):format(localPlayer.Name),
-			})
-			rayfield:Notify({
-				Title = "Webhook",
-				Content = ok and "Đã gửi test" or "Gửi thất bại (check console)",
-				Duration = 4,
-			})
-		end,
-	})
-
-	tabs.secret:CreateSection("Anti-Kick")
-	tabs.secret:CreateToggle({
-		Name = "Anti-Kick (auto rejoin khi bị kick)",
-		CurrentValue = settings.DetectKick or false,
-		Flag = "DetectKick",
-		Callback = function(value)
-			settings.DetectKick = value
-			queueSave()
-			if value then
-				startLoop("DetectKick", 1, antiKickTick)
-			else
-				stopLoop("DetectKick")
-			end
-		end,
-	})
-
 	tabs.secret:CreateSection("Anti-Cheat")
 	tabs.secret:CreateToggle({
 		Name = "Log Blocked AC Messages", CurrentValue = false, Flag = "ACLogBlocked",
@@ -5609,6 +5201,7 @@ if tabs.secret then
 			merchantState.lastVisit = nil
 			merchantState.attempted = false
 			expeditionState.lastClaimAt = 0
+			lootboxIndex = 0
 			rayfield:Notify({ Title = "VRT", Content = "Đã xoá tất cả cache", Duration = 3 })
 		end,
 	})
@@ -5616,7 +5209,6 @@ end
 
 -- ================= MAILBOX =================
 if tabs.mailbox then
-	tabs.mailbox:CreateSection("Send Huges")
 	tabs.mailbox:CreateInput({
 		Name = "Input Username", PlaceholderText = "Input Username",
 		CurrentValue = settings.MailboxUsername, RemoveTextAfterFocusLost = false, Flag = "MailboxUsername",
@@ -5635,6 +5227,10 @@ if tabs.mailbox then
 		Name = "Send Huges By Mode", CurrentValue = settings.MailboxSendHuges, Flag = "MailboxSendHuges",
 		Callback = toggleLoop("MailboxSendHuges", 10, Core.MailboxSendHuges),
 	})
+	tabs.mailbox:CreateToggle({
+		Name = "Auto Claim Mailbox", CurrentValue = settings.MailboxClaim, Flag = "MailboxClaim",
+		Callback = toggleLoop("MailboxClaim", 10, Core.MailboxClaimAll),
+	})
 	tabs.mailbox:CreateButton({
 		Name = "Reset Sent Huges",
 		Callback = function()
@@ -5643,113 +5239,11 @@ if tabs.mailbox then
 		end,
 	})
 
-	tabs.mailbox:CreateSection("Item List")
-	mailboxParagraph = tabs.mailbox:CreateParagraph({
-		Title = "Selected Items To Mailbox",
-		Content = formatMailboxList(settings.MailboxItems),
-	})
-	tabs.mailbox:CreateInput({
-		Name = "Item Name (đúng chính tả, có dấu cách)",
-		PlaceholderText = "VD: Basic Coin Jar",
-		CurrentValue = settings.MailboxItemInput or "",
-		RemoveTextAfterFocusLost = false,
-		Flag = "MailboxItemInput",
-		Callback = function(value) settings.MailboxItemInput = value end,
-	})
-	tabs.mailbox:CreateInput({
-		Name = "Min Amount (chỉ gửi khi >= số này)",
-		PlaceholderText = "0",
-		CurrentValue = tostring(settings.MailboxItemMin or 0),
-		RemoveTextAfterFocusLost = false,
-		Flag = "MailboxItemMin",
-		Callback = function(value)
-			settings.MailboxItemMin = tonumber(value) or 0
-		end,
-	})
-	tabs.mailbox:CreateButton({
-		Name = "Add Item To List",
-		Callback = function()
-			local itemId = settings.MailboxItemInput
-			if not itemId or itemId == "" then
-				rayfield:Notify({ Title = "Mailbox", Content = "Chưa nhập tên item", Duration = 4 })
-				return
-			end
-			local entry = findInventoryEntryFull(itemId)
-			if not entry then
-				rayfield:Notify({
-					Title = "Mailbox",
-					Content = "Không tìm thấy item trong inventory (check lại tên)",
-					Duration = 5,
-				})
-				return
-			end
-			settings.MailboxItems[itemId] = tonumber(settings.MailboxItemMin) or 1
-			saveMailboxList()
-			pcall(function()
-				mailboxParagraph:Set({
-					Title = "Selected Items To Mailbox",
-					Content = formatMailboxList(settings.MailboxItems),
-				})
-			end)
-			rayfield:Notify({ Title = "Mailbox", Content = "Đã thêm: " .. itemId, Duration = 3 })
-		end,
-	})
-	tabs.mailbox:CreateButton({
-		Name = "Remove Item From List",
-		Callback = function()
-			local itemId = settings.MailboxItemInput
-			if not itemId or itemId == "" then return end
-			settings.MailboxItems[itemId] = nil
-			saveMailboxList()
-			pcall(function()
-				mailboxParagraph:Set({
-					Title = "Selected Items To Mailbox",
-					Content = formatMailboxList(settings.MailboxItems),
-				})
-			end)
-			rayfield:Notify({ Title = "Mailbox", Content = "Đã xoá: " .. itemId, Duration = 3 })
-		end,
-	})
-	tabs.mailbox:CreateButton({
-		Name = "Clear Item List",
-		Callback = function()
-			settings.MailboxItems = {}
-			saveMailboxList()
-			pcall(function()
-				mailboxParagraph:Set({
-					Title = "Selected Items To Mailbox",
-					Content = formatMailboxList(settings.MailboxItems),
-				})
-			end)
-		end,
-	})
-	tabs.mailbox:CreateToggle({
-		Name = "Send Selected Items (loop)",
-		CurrentValue = settings.MailboxSendSelected or false,
-		Flag = "MailboxSendSelected",
-		Callback = function(value)
-			settings.MailboxSendSelected = value
-			queueSave()
-			if value then
-				startLoop("MailboxSendSelected", 10, Core.MailboxSendSelected)
-			else
-				stopLoop("MailboxSendSelected")
-			end
-		end,
-	})
-
-	tabs.mailbox:CreateSection("Claim")
-	tabs.mailbox:CreateToggle({
-		Name = "Auto Claim Mailbox", CurrentValue = settings.MailboxClaim, Flag = "MailboxClaim",
-		Callback = toggleLoop("MailboxClaim", 10, Core.MailboxClaimAll),
-	})
-
 	tabs.mailbox:CreateSection("Config")
 	tabs.mailbox:CreateButton({
 		Name = "Save Config Now",
 		Callback = function()
 			saveConfig()
-			saveMailboxList()
 			rayfield:Notify({ Title = "Config", Content = "Đã lưu vào " .. CONFIG_PATH, Duration = 4 })
 		end,
 	})
@@ -5758,7 +5252,6 @@ if tabs.mailbox then
 		Callback = function()
 			pcall(function()
 				if isfile(CONFIG_PATH) then delfile(CONFIG_PATH) end
-				if isfile(MAILBOX_PATH) then delfile(MAILBOX_PATH) end
 			end)
 			rayfield:Notify({
 				Title = "Config",
@@ -5812,6 +5305,7 @@ task.spawn(function()
 	if settings.OpenGifts then startLoop("OpenGifts", 1, Core.OpenGiftBags) end
 	if settings.OpenLootboxes then startLoop("OpenLootboxes", 1, Core.OpenLootboxes) end
 	if settings.ConsumeFruits then startLoop("ConsumeFruits", 3, Core.ConsumeFruits) end
+	if settings.AutoTimeTrial then startLoop("AutoTimeTrial", 5, Core.OpenTimeTrialChests) end
 	if settings.FarmTreehouse then startLoop("FarmTreehouse", 5, Core.FarmTreehouse) end
 	if settings.OpenEgg then startLoop("OpenEgg", 0.3, Core.OpenEgg) end
 	if settings.OpenSelectedEgg then startLoop("OpenSelectedEgg", 0.3, Core.OpenSelectedEgg) end
@@ -5825,6 +5319,14 @@ task.spawn(function()
 	if settings.FreeGifts then startLoop("FreeGifts", 60, Core.ClaimFreeGifts) end
 	if settings.Relics then startLoop("Relics", 5, Core.CollectRelics) end
 	if settings.RankRewards then startLoop("RankRewards", 5, Core.ClaimRankRewards) end
+	if settings.AutoRank and typeof(vrt.loadAutoRank) == "function" then
+		local func = vrt.loadAutoRank()
+		if func then
+			startLoop("AutoRank", 2, func)
+		else
+			settings.AutoRank = false
+		end
+	end
 	if settings.UpgradeFruits then startLoop("UpgradeFruits", 2, function() Core.UpgradeFruits(false) end) end
 	if settings.UpgradeFruitsShiny then startLoop("UpgradeFruitsShiny", 2, function() Core.UpgradeFruits(true) end) end
 	if settings.UpgradePotions then startLoop("UpgradePotions", 2, Core.UpgradePotions) end
@@ -5837,7 +5339,6 @@ task.spawn(function()
 	if settings.CoinJar then startLoop("CoinJar", 5, Core.CoinJar) end
 	if settings.Comet then startLoop("Comet", 5, Core.Comet) end
 	if settings.MailboxSendHuges then startLoop("MailboxSendHuges", 10, Core.MailboxSendHuges) end
-	if settings.MailboxSendSelected then startLoop("MailboxSendSelected", 10, Core.MailboxSendSelected) end
 	if settings.MailboxClaim then startLoop("MailboxClaim", 10, Core.MailboxClaimAll) end
 	if settings.InfinitePetSpeed then Core.InfinitePetSpeed(true) end
 	if settings.AutoUseFlagInZone then startLoop("AutoUseFlagInZone", 1, Core.AutoUseFlag) end
@@ -5845,15 +5346,6 @@ task.spawn(function()
 	if settings.AutoClaimExpedition then startLoop("AutoClaimExpedition", 5, function() Core.ClaimExpedition() end) end
 	if settings.AdminAbuse then startLoop("AdminAbuse", 5, Core.ClaimFakeCharacters) end
 	if settings.DMAutoJoin then startLoop("DMAutoJoin", 5, autoJoinTick) end
-	if settings.FarmTimeTrial then startLoop("FarmTimeTrial", 0.2, TimeTrial.farm) end
-	if settings.FarmTimeTrialHoverboard then
-		TimeTrial.installHoverboardHook()
-		startLoop("HoverboardHook", 2, function()
-			TimeTrial.installHoverboardHook()
-		end)
-	end
-	if settings.SendWebhookHuge then startLoop("SendWebhookHuge", 5, HugeWebhook.checkPets) end
-	if settings.DetectKick then startLoop("DetectKick", 1, antiKickTick) end
 end)
 
 -- -----------------------------------------------------
@@ -5870,7 +5362,6 @@ getgenv().VRT_Unload = function()
 	end
 	Core.ClickAuraViz()
 	Core.InfinitePetSpeed(false)
-	pcall(TimeTrial.uninstallHoverboardHook)
 	if vrt.optimizeConnection then
 		pcall(function() vrt.optimizeConnection:Disconnect() end)
 		vrt.optimizeConnection = nil
@@ -5903,8 +5394,6 @@ getgenv().VRT_Unload = function()
 	end
 
 	pcall(saveConfig)
-	pcall(saveMailboxList)
-	pcall(function() notifyGui:Destroy() end)
 	pcall(function() rayfield:Destroy() end)
 end
 
