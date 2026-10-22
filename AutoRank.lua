@@ -555,9 +555,9 @@ local QUEST_PRIORITY = {
     BEST_COMET = 2,
     BEST_COIN_JAR = 2,
     BEST_LUCKYBLOCK = 2,
-    BEST_PINATA = 3,
+    BEST_PINATA = 2,
     BEST_EGG = 3,
-    CURRENT_BREAKABLE = 4,
+    CURRENT_BREAKABLE = 3,
     BEST_SUPERIOR_MINI_CHEST = 4,
     DIAMOND_BREAKABLE = 4,
     BEST_MINI_CHEST = 4,
@@ -1141,7 +1141,22 @@ local function RunTopPriorityQuest(quests, isZoneGate)
     end
 end
 
+local startupTeleportDone = false
+
 function InitQuest()
+    -- Lan chay dau tien: tele toi zone farm du co quest hay khong
+    if not startupTeleportDone then
+        local character = LocalPlayer.Character
+        if not (character and character:FindFirstChild("HumanoidRootPart")) then
+            return
+        end
+
+        startupTeleportDone = true
+        pcall(function()
+            TeleportToZone(GetMaximumZoneInfo().Folder)
+        end)
+    end
+
     if GetMaximumZoneInfo().Number == ZoneCmds.GetMaximumOverallZone().ZoneNumber then
         -- Dang o zone cao nhat: lam quest thuong
         RunTopPriorityQuest(GetActiveQuests(), false)
