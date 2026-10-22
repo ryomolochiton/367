@@ -77,19 +77,31 @@ local function TeleportToZone(zoneFolder)
         return
     end
 
-    local interact = zoneFolder:FindFirstChild("INTERACT")
-    local spawnPosition = interact and interact.BREAKABLE_SPAWNS.Main.Position
+    local function getMainSpawn()
+        local interact = zoneFolder:FindFirstChild("INTERACT")
+        local spawns = interact and interact:FindFirstChild("BREAKABLE_SPAWNS")
+        return spawns and spawns:FindFirstChild("Main")
+    end
 
-    if not spawnPosition or (root.Position - spawnPosition).Magnitude > 30 then
-        root.CFrame = zoneFolder.PERSISTENT.Teleport.CFrame
+    local mainSpawn = getMainSpawn()
+    if not mainSpawn or (root.Position - mainSpawn.Position).Magnitude > 30 then
+        local persistent = zoneFolder:FindFirstChild("PERSISTENT")
+        local teleportPart = persistent and persistent:FindFirstChild("Teleport")
+        if not teleportPart then
+            return
+        end
+
+        root.CFrame = teleportPart.CFrame
 
         local waitStart = os.clock()
         repeat
             task.wait()
         until not LocalPlayer.Character or IsGrounded() or os.clock() - waitStart > 5
 
-        if interact then
-            root.CFrame = interact.BREAKABLE_SPAWNS.Main.CFrame
+        -- INTERACT chi stream sau khi da toi gan
+        mainSpawn = getMainSpawn()
+        if mainSpawn then
+            root.CFrame = mainSpawn.CFrame
         end
     end
 end
@@ -346,83 +358,92 @@ function UsePotion(minTier, amount)
     end
 end
 
-local function IsCombinablePotion(potion)
-    return potion.tn > 1 and potion.tn <= 4 and potion.id ~= "Walkspeed" and potion.tn ~= 3
+-- Khong gop cac vat pham nay
+local EXCLUDED_POTIONS = { "Walkspeed" } -- theo ten
+local EXCLUDED_ENCHANTS = { "Magnet 3" } -- theo "ten tier"
+
+local function IsExcludedPotion(potion)
+    return table.find(EXCLUDED_POTIONS, potion.id) ~= nil
 end
 
-local EXCLUDED_ENCHANTS = { "Magnet 3" } -- khong gop cac enchant nay
-
-local function IsCombinableEnchant(enchant)
-    return enchant.tn > 1 and enchant.tn <= 4 and not table.find(EXCLUDED_ENCHANTS, enchant.id .. " " .. enchant.tn)
+local function IsExcludedEnchant(enchant)
+    return table.find(EXCLUDED_ENCHANTS, tostring(enchant.id) .. " " .. tostring(enchant.tn)) ~= nil
 end
 
--- Dung may Upgrade (Potions / Enchants) van tinh vao quest Collect, ke ca khi chi gop
--- duoc MOT PHAN so luong can: moi lan gop toi da min(can them, so lan gop duoc tu stack).
+-- uid gop loi -> thoi diem het han, de khong bi spam 1 stack khong gop duoc
+local upgradeBlacklist = {}
+local UPGRADE_BLACKLIST_TIME = 30
+
+-- Quest Collect khong yeu cau tier: tier nao gop duoc cung tinh, uu tien tier THAP truoc.
 -- Tra ve: uid, soLanGop, soLuongDangCo, vatPham (hoac nil neu khong gop duoc)
-local function FindPotionUpgrade(wanted)
-    for uid, potion in pairs(Inventory().Potion) do
-        if IsCombinablePotion(potion) then
-            setthreadidentity(4)
-            local perUpgrade = CalcPotionsPerTierRequired(potion.tn)
-            local have = potion._am or 1
-            if perUpgrade and perUpgrade > 0 then
-                local times = math.min(wanted, math.floor(have / perUpgrade))
-                if times >= 1 then
-                    return uid, times, have, potion
-                end
+local function FindUpgrade(items, calcPerTier, isExcluded, wanted)
+    local candidates = {}
+    local now = os.clock()
+
+    for uid, item in pairs(items or {}) do
+        local blockedUntil = upgradeBlacklist[uid]
+        if type(item) == "table" and not isExcluded(item) and not (blockedUntil and blockedUntil > now) then
+            table.insert(candidates, { uid = uid, item = item })
+        end
+    end
+
+    table.sort(candidates, function(a, b)
+        local tierA, tierB = a.item.tn or 1, b.item.tn or 1
+        if tierA ~= tierB then
+            return tierA < tierB
+        end
+        return tostring(a.uid) < tostring(b.uid)
+    end)
+
+    setthreadidentity(4)
+    for _, candidate in ipairs(candidates) do
+        local item = candidate.item
+        local success, perUpgrade = pcall(calcPerTier, item.tn or 1)
+        local have = item._am or 1
+
+        if success and perUpgrade and perUpgrade > 0 then
+            local times = math.min(wanted, math.floor(have / perUpgrade))
+            if times >= 1 then
+                return candidate.uid, times, have, item
             end
         end
     end
     return nil
+end
+
+local function FindPotionUpgrade(wanted)
+    return FindUpgrade(Inventory().Potion, CalcPotionsPerTierRequired, IsExcludedPotion, wanted)
 end
 
 local function FindEnchantUpgrade(wanted)
-    for uid, enchant in pairs(Inventory().Enchant) do
-        if IsCombinableEnchant(enchant) then
-            setthreadidentity(4)
-            local perUpgrade = CalcEnchantsPerTierRequired(enchant.tn)
-            local have = enchant._am or 1
-            if perUpgrade and perUpgrade > 0 then
-                local times = math.min(wanted, math.floor(have / perUpgrade))
-                if times >= 1 then
-                    return uid, times, have, enchant
-                end
-            end
-        end
-    end
-    return nil
+    return FindUpgrade(Inventory().Enchant, CalcEnchantsPerTierRequired, IsExcludedEnchant, wanted)
 end
 
--- Gop potion len tier. Tra ve true neu da gop. Chi gop 1 loai moi lan goi.
+-- Tra ve true neu da gop. Chi gop 1 stack moi lan goi.
+local function RunUpgrade(find, remoteName, wanted)
+    if not wanted or wanted < 1 then
+        return false
+    end
+
+    local uid, times, _, item = find(wanted)
+    if not uid then
+        return false
+    end
+
+    print("Combining:", item.id, item.tn, times)
+    local success, ok = pcall(Network.Invoke, remoteName, uid, times)
+    if not success or ok == false then
+        upgradeBlacklist[uid] = os.clock() + UPGRADE_BLACKLIST_TIME
+    end
+    return true
+end
+
 local function CombinePotions(wanted)
-    if not wanted or wanted < 1 then
-        return false
-    end
-
-    local uid, times, _, potion = FindPotionUpgrade(wanted)
-    if not uid then
-        return false
-    end
-
-    print("Combining:", potion.id, potion.tn, times)
-    Network.Invoke("UpgradePotionsMachine_Activate", uid, times)
-    return true
+    return RunUpgrade(FindPotionUpgrade, "UpgradePotionsMachine_Activate", wanted)
 end
 
--- Gop enchant len tier. Tra ve true neu da gop. Chi gop 1 loai moi lan goi.
 local function CombineEnchants(wanted)
-    if not wanted or wanted < 1 then
-        return false
-    end
-
-    local uid, times, _, enchant = FindEnchantUpgrade(wanted)
-    if not uid then
-        return false
-    end
-
-    print("Combining:", enchant.id, enchant.tn, times)
-    Network.Invoke("UpgradeEnchantsMachine_Activate", uid, times)
-    return true
+    return RunUpgrade(FindEnchantUpgrade, "UpgradeEnchantsMachine_Activate", wanted)
 end
 
 ------------------------------------------------------------------------
@@ -745,6 +766,32 @@ local RARE_EGG_CAPSULES = {
     [4] = "264 - Egg Capsule",
 }
 
+-- StreamingEnabled: capsule bi unload khi dung xa nen FindFirstChild tra ve nil.
+-- Luu CFrame khi da thay, lan sau xa thi tele thang toi do de stream lai.
+local capsuleCFrames = {}
+
+local function GetCapsuleCFrame(worldNumber, capsuleName)
+    local eggs = Workspace.__THINGS:FindFirstChild("Eggs")
+    local worldFolder = eggs and eggs:FindFirstChild("World" .. worldNumber)
+    local capsule = worldFolder and worldFolder:FindFirstChild(capsuleName)
+    if not capsule then
+        return nil
+    end
+
+    local tier = capsule:FindFirstChild("Tier")
+    return tier and tier.CFrame or capsule:GetPivot()
+end
+
+-- Lan dau chua co CFrame: tim zone co trung cung so voi capsule de tele toi gan
+local function FindZoneByEgg(eggNumber, worldNumber)
+    for _, zone in pairs(ZonesDirectory) do
+        if zone.WorldNumber == worldNumber and zone.MaximumAvailableEgg == eggNumber then
+            return zone
+        end
+    end
+    return nil
+end
+
 local EGG_STAND_OFFSETS = {
     [3] = { Dist = 35, Offset = 30 },
     [4] = { Dist = 85, Offset = -30 },
@@ -799,7 +846,7 @@ local QuestHandlers = {
         UseItemInBestZone()
     end,
 
-    HATCH_RARE_PET = function()
+    HATCH_RARE_PET = function(quest)
         local worldNumber = GetWorldNumber()
         local capsuleName = RARE_EGG_CAPSULES[worldNumber]
         local root = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
@@ -807,11 +854,24 @@ local QuestHandlers = {
             return
         end
 
-        local capsule = Workspace.__THINGS.Eggs["World" .. worldNumber]:FindFirstChild(capsuleName)
-        if capsule then
-            root.CFrame = capsule.Tier.CFrame
+        local capsuleCFrame = GetCapsuleCFrame(worldNumber, capsuleName)
+        if capsuleCFrame then
+            capsuleCFrames[worldNumber] = capsuleCFrame
+            root.CFrame = capsuleCFrame
             HatchClosestEgg()
+            return
         end
+
+        -- Capsule chua duoc stream (dung qua xa)
+        local cached = capsuleCFrames[worldNumber]
+        if cached then
+            root.CFrame = cached
+            pcall(LocalPlayer.RequestStreamAroundAsync, LocalPlayer, cached.Position)
+            return
+        end
+
+        local zone = FindZoneByEgg(tonumber(capsuleName:split(" ")[1]), worldNumber)
+        TeleportToZone((zone and zone.ZoneFolder) or quest.Folder)
     end,
 
     BEST_EGG = function(quest)
