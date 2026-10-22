@@ -264,44 +264,75 @@ local function IsCombinableEnchant(enchant)
     return enchant.tn > 1 and enchant.tn <= 4 and not table.find(EXCLUDED_ENCHANTS, enchant.id .. " " .. enchant.tn)
 end
 
--- Gop potion len tier (dung may Upgrade Potions). Chi gop 1 loai moi lan goi.
-local function CombinePotions(amount)
-    if not amount then
-        return
-    end
-
+-- Dung may Upgrade (Potions / Enchants) van tinh vao quest Collect, ke ca khi chi gop
+-- duoc MOT PHAN so luong can: moi lan gop toi da min(can them, so lan gop duoc tu stack).
+-- Tra ve: uid, soLanGop, soLuongDangCo, vatPham (hoac nil neu khong gop duoc)
+local function FindPotionUpgrade(wanted)
     for uid, potion in pairs(Inventory().Potion) do
         if IsCombinablePotion(potion) then
             setthreadidentity(4)
-            local required = CalcPotionsPerTierRequired(potion.tn) * amount
-            if required < (potion._am or 1) then
-                print("Combining:", potion.id, potion.tn, required)
-                Network.Invoke("UpgradePotionsMachine_Activate", uid, amount)
-                break
+            local perUpgrade = CalcPotionsPerTierRequired(potion.tn)
+            local have = potion._am or 1
+            if perUpgrade and perUpgrade > 0 then
+                local times = math.min(wanted, math.floor(have / perUpgrade))
+                dprint("Potion upgrade check", potion.id, potion.tn, "have=" .. have, "per=" .. perUpgrade, "times=" .. times)
+                if times >= 1 then
+                    return uid, times, have, potion
+                end
             end
         end
     end
+    return nil
 end
 
--- Gop enchant len tier (dung may Upgrade Enchants). Chi gop 1 loai moi lan goi.
-local function CombineEnchants(amount)
-    if not amount then
-        return
-    end
-
+local function FindEnchantUpgrade(wanted)
     for uid, enchant in pairs(Inventory().Enchant) do
         if IsCombinableEnchant(enchant) then
             setthreadidentity(4)
-            local required = CalcEnchantsPerTierRequired(enchant.tn) * amount
+            local perUpgrade = CalcEnchantsPerTierRequired(enchant.tn)
             local have = enchant._am or 1
-            dprint("Enchant DEBUG PRINT", enchant.id, enchant.tn, have, required)
-            if required < have then
-                print("Combining:", enchant.id, enchant.tn, math.floor(required))
-                Network.Invoke("UpgradeEnchantsMachine_Activate", uid, amount)
-                break
+            if perUpgrade and perUpgrade > 0 then
+                local times = math.min(wanted, math.floor(have / perUpgrade))
+                dprint("Enchant upgrade check", enchant.id, enchant.tn, "have=" .. have, "per=" .. perUpgrade, "times=" .. times)
+                if times >= 1 then
+                    return uid, times, have, enchant
+                end
             end
         end
     end
+    return nil
+end
+
+-- Gop potion len tier. Tra ve true neu da gop. Chi gop 1 loai moi lan goi.
+local function CombinePotions(wanted)
+    if not wanted or wanted < 1 then
+        return false
+    end
+
+    local uid, times, _, potion = FindPotionUpgrade(wanted)
+    if not uid then
+        return false
+    end
+
+    print("Combining:", potion.id, potion.tn, times)
+    Network.Invoke("UpgradePotionsMachine_Activate", uid, times)
+    return true
+end
+
+-- Gop enchant len tier. Tra ve true neu da gop. Chi gop 1 loai moi lan goi.
+local function CombineEnchants(wanted)
+    if not wanted or wanted < 1 then
+        return false
+    end
+
+    local uid, times, _, enchant = FindEnchantUpgrade(wanted)
+    if not uid then
+        return false
+    end
+
+    print("Combining:", enchant.id, enchant.tn, times)
+    Network.Invoke("UpgradeEnchantsMachine_Activate", uid, times)
+    return true
 end
 
 ------------------------------------------------------------------------
@@ -400,8 +431,8 @@ end
 -- Quest: du lieu
 ------------------------------------------------------------------------
 -- Do uu tien: so NHO = uu tien CAO. Quest khong co trong bang = DEFAULT_QUEST_PRIORITY.
--- Moi lan InitQuest chay, script chon lai quest uu tien cao nhat dang du dieu kien
--- => khi mot quest uu tien cao du dieu kien (vd: du potion de gop) se chuyen sang ngay.
+-- Moi lan InitQuest chay, script chon lai quest co so uu tien NHO NHAT (khong can du tai nguyen,
+-- xem SKIP_QUESTS_WITHOUT_RESOURCES). Quest moi xuat hien o muc cao hon se duoc chuyen sang ngay.
 -- Quest cung muc uu tien duoc xep co dinh theo thu tu trong Goals (slot).
 local QUEST_PRIORITY = {
     BEST_RAINBOW_PET = 1,
@@ -552,16 +583,9 @@ local function CheckCollectPotion(amount)
         return
     end
 
-    for uid, potion in pairs(Inventory().Potion) do
-        if IsCombinablePotion(potion) then
-            setthreadidentity(4)
-            local required = CalcPotionsPerTierRequired(potion.tn) * amount
-            local have = potion._am or 1
-            dprint("Potion Amount Check DEBUG PRINT", required, have, potion.id, potion.tn)
-            if required <= have then
-                return true, uid, have
-            end
-        end
+    local uid, _, have = FindPotionUpgrade(amount)
+    if uid then
+        return true, uid, have
     end
     return false, nil, 0
 end
@@ -571,16 +595,9 @@ local function CheckCollectEnchant(amount)
         return
     end
 
-    for uid, enchant in pairs(Inventory().Enchant) do
-        if IsCombinableEnchant(enchant) then
-            setthreadidentity(4)
-            local required = CalcEnchantsPerTierRequired(enchant.tn) * amount
-            local have = enchant._am or 1
-            dprint("Enchant Amount Check DEBUG PRINT", required, have, enchant.id, enchant.tn)
-            if required <= have then
-                return true, uid, have
-            end
-        end
+    local uid, _, have = FindEnchantUpgrade(amount)
+    if uid then
+        return true, uid, have
     end
     return false, nil, 0
 end
@@ -656,11 +673,15 @@ local QuestHandlers = {
     end,
 
     COLLECT_POTION = function(quest)
-        CombinePotions(quest.neededamount)
+        if not CombinePotions(quest.neededamount) then
+            TeleportToZone(quest.Folder)
+        end
     end,
 
     COLLECT_ENCHANT = function(quest)
-        CombineEnchants(quest.neededamount)
+        if not CombineEnchants(quest.neededamount) then
+            TeleportToZone(quest.Folder)
+        end
     end,
 
     BEST_COMET = function()
@@ -881,22 +902,29 @@ local function TryRebirthOrBuyZone(maxZone, nextZone)
     return false
 end
 
--- Ghi log khi quest dang lam thay doi (vd: quest uu tien cao vua du dieu kien)
+-- Ghi log khi quest dang lam thay doi (vd: co quest uu tien cao hon xuat hien)
 local currentQuestKey, currentQuestName
 
-local function NoteActiveQuest(quest, isZoneGate)
+local function NoteActiveQuest(quest, isZoneGate, lacking)
     local key = (isZoneGate and "gate:" or "goal:") .. tostring(quest.questname) .. ":" .. tostring(quest.slot)
     if key ~= currentQuestKey then
         dprint(
             "Switch quest: " .. tostring(currentQuestName) .. " -> " .. tostring(quest.questname)
                 .. " (priority " .. tostring(quest.priority) .. ")"
+                .. (lacking and " [thieu tai nguyen -> farm zone tot nhat]" or "")
         )
         currentQuestKey, currentQuestName = key, quest.questname
     end
 end
 
--- Lam quest dau tien du tai nguyen (da sap theo uu tien), bo qua quest thieu tai nguyen
-local function RunFirstDoableQuest(quests, isZoneGate)
+-- false = luon lam quest co so uu tien NHO NHAT, du thieu tai nguyen hay khong
+--         (thieu thi farm zone tot nhat de thu thap, khong chay handler cua quest)
+-- true  = cach cu: bo qua quest thieu tai nguyen va lam quest ke tiep
+-- Luu y: khi false, quest ma farm khong the dap ung (vd: BEST_RAINBOW_PET khi chua co pet gold)
+-- se giu bot o quest do den khi du dieu kien.
+local SKIP_QUESTS_WITHOUT_RESOURCES = false
+
+local function RunTopPriorityQuest(quests, isZoneGate)
     for index, quest in pairs(SortQuestsByPriority(quests)) do
         if isZoneGate then
             dprint(index, quest.questname, "-- InitQuest")
@@ -909,16 +937,21 @@ local function RunFirstDoableQuest(quests, isZoneGate)
             canDo, have = ok, amount or 0
         end
 
-        if canDo then
-            NoteActiveQuest(quest, isZoneGate)
+        if canDo or not SKIP_QUESTS_WITHOUT_RESOURCES then
+            NoteActiveQuest(quest, isZoneGate, not canDo)
             if not isZoneGate then
                 HighlightQuest(quest, #quests)
             end
-            MakeQuest(quest.questname, {
-                amount = quest.amount,
-                potiontier = quest.potiontier,
-                neededamount = quest.neededamount,
-            })
+
+            if canDo then
+                MakeQuest(quest.questname, {
+                    amount = quest.amount,
+                    potiontier = quest.potiontier,
+                    neededamount = quest.neededamount,
+                })
+            else
+                TeleportToZone(GetMaximumZoneInfo().Folder)
+            end
             return
         end
 
@@ -934,12 +967,12 @@ end
 function InitQuest()
     if GetMaximumZoneInfo().Number == ZoneCmds.GetMaximumOverallZone().ZoneNumber then
         -- Dang o zone cao nhat: lam quest thuong
-        RunFirstDoableQuest(GetActiveQuests(), false)
+        RunTopPriorityQuest(GetActiveQuests(), false)
     elseif GetCurrentZoneQuests() then
         -- Co quest mo cong zone tiep theo
         dprint("MAKING ZONEGATEQUEST")
         TryRebirthOrBuyZone(GetMaximumZone(), GetNextZone())
-        RunFirstDoableQuest(GetZoneGateQuests(), true)
+        RunTopPriorityQuest(GetZoneGateQuests(), true)
     else
         -- Khong co quest: farm, mua zone, rebirth, doi world
         dprint("Farm Areas")
