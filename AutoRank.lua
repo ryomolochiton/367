@@ -1,3 +1,22 @@
+--// AutoRank (Pet Simulator 99) - BAN CHUAN (khoi phuc + doi chieu)
+--//
+--// Logic lay tu: null62156.txt + AutoRank_clean.lua (decompile bytecode that).
+--// rank.txt chi dung de DOI CHIEU ten/hang so, KHONG lay logic (no goi API sai cu phap:
+--// Save:Get / Network:Invoke / Util:... trong khi 2 ban decompile dung Save.Get / Network.Invoke).
+--//
+--// rank.txt xac nhan: "215 - Egg Capsule", "264 - Egg Capsule", potion "Walkspeed",
+--// mau (0,170,255), GUI GoalsSide...QuestsHolder, cac item (Basic Coin Jar, Mini Pinata,
+--// Mini Lucky Block) va cac remote: CustomEggs_Hatch, Eggs_RequestPurchase, Potions: Consume,
+--// UpgradePotionsMachine_Activate, UpgradeEnchantsMachine_Activate, RainbowMachine_Activate,
+--// GoldMachine_Activate, Comet_Spawn, CoinJar_Spawn, MiniLuckyBlock_Consume,
+--// MiniPinata_Consume, Zones_RequestPurchase.
+--// rank.txt KHONG co: "Magnet 3", ten tien te cac world, remote World<N>Teleport, bang uu tien,
+--// bang [so sao] -> ten Frame (da thay bang co che tu dong, xem phan "To mau tieu de quest").
+--//
+--// Script tra ve ham InitQuest. Goi lap lai, vi du:
+--//     local InitQuest = loadstring(...)()
+--//     while task.wait() do InitQuest() end
+
 local DEBUG = true -- dat false de tat cac dong print
 
 local function dprint(...)
@@ -380,7 +399,10 @@ end
 ------------------------------------------------------------------------
 -- Quest: du lieu
 ------------------------------------------------------------------------
--- Do uu tien: so nho chay truoc. Quest khong co trong bang = 4.
+-- Do uu tien: so NHO = uu tien CAO. Quest khong co trong bang = DEFAULT_QUEST_PRIORITY.
+-- Moi lan InitQuest chay, script chon lai quest uu tien cao nhat dang du dieu kien
+-- => khi mot quest uu tien cao du dieu kien (vd: du potion de gop) se chuyen sang ngay.
+-- Quest cung muc uu tien duoc xep co dinh theo thu tu trong Goals (slot).
 local QUEST_PRIORITY = {
     BEST_RAINBOW_PET = 1,
     BEST_GOLD_PET = 1,
@@ -393,13 +415,19 @@ local QUEST_PRIORITY = {
     BEST_LUCKYBLOCK = 2,
     BEST_PINATA = 2,
     BEST_EGG = 3,
-    CURRENT_BREAKABLE = 4,
+    CURRENT_BREAKABLE = 3,
     BEST_SUPERIOR_MINI_CHEST = 4,
     DIAMOND_BREAKABLE = 4,
     BEST_MINI_CHEST = 4,
     HATCH_RARE_PET = 1,
     CURRENCY = 5,
 }
+
+local DEFAULT_QUEST_PRIORITY = 4
+
+local function GetQuestPriority(questName)
+    return QUEST_PRIORITY[questName] or DEFAULT_QUEST_PRIORITY
+end
 
 -- Goals: [tenQuest] = id
 function GetQuestByID(id)
@@ -452,7 +480,7 @@ function GetActiveQuests()
         table.insert(activeQuests, {
             slot = slot, -- vi tri quest trong danh sach Goals (dung de tim Frame tren UI)
             questname = questName,
-            priority = QUEST_PRIORITY[questName] or 4,
+            priority = GetQuestPriority(questName),
             amount = goal.Amount,
             neededamount = goal.Amount - goal.Progress,
             queststars = goal.Stars,
@@ -475,7 +503,7 @@ function GetZoneGateQuests()
     local questName = GetQuestByID(quest.Type)
     table.insert(zoneGateQuests, {
         questname = questName,
-        priority = QUEST_PRIORITY[questName] or 4,
+        priority = GetQuestPriority(questName),
         amount = quest.Amount,
         neededamount = quest.Amount - quest.Progress,
         id = quest.Type,
@@ -484,9 +512,14 @@ function GetZoneGateQuests()
     return zoneGateQuests
 end
 
+-- priority tang dan (so nho = uu tien cao); bang nhau thi theo slot -> thu tu co dinh,
+-- khong bi dao qua lai giua cac vong lap (table.sort khong on dinh neu chi so sanh priority)
 function SortQuestsByPriority(quests)
     table.sort(quests, function(a, b)
-        return a.priority < b.priority
+        if a.priority ~= b.priority then
+            return a.priority < b.priority
+        end
+        return (a.slot or 0) < (b.slot or 0)
     end)
     return quests
 end
@@ -848,6 +881,20 @@ local function TryRebirthOrBuyZone(maxZone, nextZone)
     return false
 end
 
+-- Ghi log khi quest dang lam thay doi (vd: quest uu tien cao vua du dieu kien)
+local currentQuestKey, currentQuestName
+
+local function NoteActiveQuest(quest, isZoneGate)
+    local key = (isZoneGate and "gate:" or "goal:") .. tostring(quest.questname) .. ":" .. tostring(quest.slot)
+    if key ~= currentQuestKey then
+        dprint(
+            "Switch quest: " .. tostring(currentQuestName) .. " -> " .. tostring(quest.questname)
+                .. " (priority " .. tostring(quest.priority) .. ")"
+        )
+        currentQuestKey, currentQuestName = key, quest.questname
+    end
+end
+
 -- Lam quest dau tien du tai nguyen (da sap theo uu tien), bo qua quest thieu tai nguyen
 local function RunFirstDoableQuest(quests, isZoneGate)
     for index, quest in pairs(SortQuestsByPriority(quests)) do
@@ -863,6 +910,7 @@ local function RunFirstDoableQuest(quests, isZoneGate)
         end
 
         if canDo then
+            NoteActiveQuest(quest, isZoneGate)
             if not isZoneGate then
                 HighlightQuest(quest, #quests)
             end
