@@ -1029,10 +1029,33 @@ end
 local function getGiftIds()
 	return memoize("gifts", function()
 		local gifts, seen = {}, {}
-		for _, id in ipairs(getBucketIds("Misc")) do
-			if isGiftBagId(id) and not seen[id] then
-				seen[id] = true
-				table.insert(gifts, id)
+		-- Primary source: __DIRECTORY.MiscItems.Categorized.Gifts (matches obf).
+		local misc = directFolder and directFolder:FindFirstChild("MiscItems")
+		local categorized = misc and misc:FindFirstChild("Categorized")
+		local giftsFolder = categorized and categorized:FindFirstChild("Gifts")
+		if giftsFolder then
+			for _, child in ipairs(giftsFolder:GetChildren()) do
+				local id
+				local ok, data = pcall(require, child)
+				if ok and typeof(data) == "table" and data._id then
+					id = data._id
+				else
+					local parts = string.split(child.Name, " | ")
+					id = parts[2] or child.Name
+				end
+				if id and id ~= "" and not seen[id] then
+					seen[id] = true
+					table.insert(gifts, id)
+				end
+			end
+		end
+		-- Fallback: owned Misc gift bags, in case the directory path is missing.
+		if #gifts == 0 then
+			for _, id in ipairs(getBucketIds("Misc")) do
+				if isGiftBagId(id) and not seen[id] then
+					seen[id] = true
+					table.insert(gifts, id)
+				end
 			end
 		end
 		table.sort(gifts)
@@ -1798,14 +1821,11 @@ local function tryConsumeFlagWithCtx(flagId, amount, ctx, pos)
 	return false, attempts
 end
 
--- Kích hoạt flag tại vị trí hiện tại, KHÔNG teleport
+-- Kích hoạt flag đã chọn tại vị trí hiện tại mỗi tick (loop 1s), KHÔNG teleport.
+-- Bám sát obf: lặp lại ActivateFlag để luôn bổ sung cờ ngay khi có thể.
 Core.AutoUseFlag = function()
 	local root = getRoot()
 	if not root then return end
-
-	local now = os.clock()
-	if now - flagAutoCache.lastCheck < 1 then return end
-	flagAutoCache.lastCheck = now
 
 	local selectedFlag = settings.SelectedFlag
 	local owned, resolvedId = Core.GetFlagOwnedAmount(selectedFlag)
@@ -1816,36 +1836,14 @@ Core.AutoUseFlag = function()
 
 	local zoneInfo = detectCurrentZone()
 	local anchorPos = (zoneInfo and zoneInfo.anchorPos) or root.Position
-	local zoneId = (zoneInfo and zoneInfo.id) or "current"
 
-	local hasFlag, existingFlagId, endTime, existingCtx = checkZoneFlag(anchorPos)
-	if hasFlag then
-		flagAutoCache.failLog[zoneId] = nil
-		return
-	end
+	-- Nếu zone đã có cờ còn hiệu lực thì bỏ qua tick này.
+	local hasFlag = checkZoneFlag(anchorPos)
+	if hasFlag then return end
 
-	if existingFlagId and endTime and endTime <= os.time() then
-		local flagCmds = Modules.FlexibleFlagCmds
-		if flagCmds and typeof(flagCmds.DeactivateFlag) == "function" then
-			pcall(flagCmds.DeactivateFlag, existingFlagId)
-			task.wait(0.3)
-		end
-	end
-
-	if now - flagAutoCache.lastConsume < 5 then return end
-
-	local ok, used = tryConsumeFlagWithCtx(resolvedId, amount, existingCtx, anchorPos)
+	local ok = tryConsumeFlagWithCtx(resolvedId, amount, nil, anchorPos)
 	if ok then
-		flagAutoCache.lastConsume = now
-		flagAutoCache.lastZone = zoneId
-		flagAutoCache.failLog[zoneId] = nil
 		invalidateSaveCache()
-		return
-	end
-
-	if not flagAutoCache.failLog[zoneId] then
-		flagAutoCache.failLog[zoneId] = true
-		warn(("[VRT] Flag auto-use FAILED (%s x%d) zone %s"):format(resolvedId, amount, zoneId))
 	end
 end
 
@@ -2497,32 +2495,25 @@ end
 Core.CombineKeysAll = function() combineKeys(false) end
 Core.CombineKeysOnce = function() combineKeys(true) end
 
--- Gift bags — open full owned amount per type
+-- Gift bags — mở 1 túi mỗi loại mỗi tick (loop UI 0.33s điều tiết nhịp).
 Core.OpenGiftBags = function()
 	local gifts = getGiftIds()
 	local wanted = resolveSelection(settings.SelectedGifts, gifts)
+	if #wanted == 0 then return end
+
+	local opened = false
 	for _, itemId in ipairs(wanted) do
 		local entry = findInventoryEntry(itemId)
 		local amount = entry and (entry._am or 0) or 0
 		if amount > 0 then
-			local fails = 0
-			for i = 1, math.min(amount, 500) do
-				local ok = invoke("GiftBag_Open", itemId, 1)
-				if ok then
-					fails = 0
-				else
-					fails += 1
-					if fails >= 3 then break end
-				end
-				if i % 15 == 0 then
-					invalidateSaveCache()
-					task.wait(0.05)
-				end
+			local ok = invoke("GiftBag_Open", itemId, 1)
+			if ok then
+				invalidateSaveCache()
+				opened = true
 			end
-			invalidateSaveCache()
-			task.wait(0.3)
 		end
 	end
+	return opened
 end
 
 -- Lootbox — open max amount per type, all selected types
@@ -2546,11 +2537,13 @@ local function getLootboxMaxOpen()
 end
 
 -- Build a lootbox item instance from an inventory entry using the Items library.
-local function buildLootboxItem(entry, uid)
+-- Mirrors the original: v438 = Items.Lootbox(itemId); v438._uid = uid.
+local function buildLootboxItem(entry, uid, itemId)
 	local items = Modules.Items
 	if typeof(items) ~= "table" then return nil end
-	-- Items.From auto-dispatches on the entry's type tag.
 	local builders = {
+		function() return items.Lootbox(itemId) end,
+		function() return items.Lootbox(items, itemId) end,
 		function() return items.From(items, entry) end,
 		function() return items.From(entry) end,
 		function() return items.FromModule and items.FromModule(items, entry) end,
@@ -2558,7 +2551,7 @@ local function buildLootboxItem(entry, uid)
 	for _, build in ipairs(builders) do
 		local ok, box = pcall(build)
 		if ok and typeof(box) == "table" then
-			pcall(function() box._uid = box._uid or uid end)
+			pcall(function() box._uid = uid end)
 			return box
 		end
 	end
@@ -2574,7 +2567,7 @@ local function openLootboxBatch(itemId, uid, batch, cmds)
 
 	local attempts = {}
 	if cmds and typeof(cmds.Open) == "function" then
-		local box = buildLootboxItem(before, uid)
+		local box = buildLootboxItem(before, uid, itemId)
 		if box then
 			attempts[#attempts + 1] = function() return pcall(cmds.Open, box, batch) end
 			attempts[#attempts + 1] = function() return pcall(cmds.Open, cmds, box, batch) end
@@ -4580,7 +4573,7 @@ if tabs.keys then
 	})
 	tabs.keys:CreateToggle({
 		Name = "Open Selected Gift Bags (Max)", CurrentValue = settings.OpenGifts, Flag = "OpenGifts",
-		Callback = toggleLoop("OpenGifts", 1, Core.OpenGiftBags),
+		Callback = toggleLoop("OpenGifts", 0.33, Core.OpenGiftBags),
 	})
 
 	tabs.keys:CreateSection("Lootboxes Section")
@@ -4800,8 +4793,8 @@ if tabs.auto then
 		end,
 	})
 	tabs.auto:CreateSlider({
-		Name = "Flag Amount (số lượng dùng mỗi lần)",
-		Range = { 1, 100 }, Increment = 1, Suffix = "flags",
+		Name = "Flag Amount to Use (số lượng dùng mỗi lần)",
+		Range = { 1, 45 }, Increment = 1, Suffix = "flags",
 		CurrentValue = settings.FlagAmount or 45, Flag = "FlagAmount",
 		Callback = function(value) settings.FlagAmount = value; queueSave() end,
 	})
