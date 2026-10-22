@@ -1729,10 +1729,13 @@ local function checkZoneFlag(anchorPos)
 	local ok, ctx = pcall(flagCmds.SpatialQuery, anchorPos)
 	if not ok or not ctx then return false, nil, nil, nil end
 	local endTime = ctx.EndTime
-	if endTime and endTime <= os.time() then
-		return false, ctx.FlagId, endTime, ctx
+	-- Chỉ coi là "đã có cờ" khi EndTime còn hiệu lực thực sự (trong tương lai).
+	-- SpatialQuery vẫn trả ctx của vùng ngay cả khi CHƯA có cờ (EndTime = nil),
+	-- nên nếu return true ở đây thì AutoUseFlag sẽ bail mãi mãi -> cờ không bao giờ tự dùng.
+	if typeof(endTime) == "number" and endTime > os.time() then
+		return true, ctx.FlagId, endTime, ctx
 	end
-	return true, ctx.FlagId, endTime, ctx
+	return false, ctx.FlagId, endTime, ctx
 end
 
 local function tryConsumeFlagWithCtx(flagId, amount, ctx, pos)
@@ -1838,10 +1841,10 @@ Core.AutoUseFlag = function()
 	local anchorPos = (zoneInfo and zoneInfo.anchorPos) or root.Position
 
 	-- Nếu zone đã có cờ còn hiệu lực thì bỏ qua tick này.
-	local hasFlag = checkZoneFlag(anchorPos)
+	local hasFlag, _, _, ctx = checkZoneFlag(anchorPos)
 	if hasFlag then return end
 
-	local ok = tryConsumeFlagWithCtx(resolvedId, amount, nil, anchorPos)
+	local ok = tryConsumeFlagWithCtx(resolvedId, amount, ctx, anchorPos)
 	if ok then
 		invalidateSaveCache()
 	end
@@ -2647,12 +2650,15 @@ local function consumeFruitStack(fruitCmds, uid, entry, amount)
 	local before = getFruitAmount(uid)
 	if before <= 0 then return false, 0 end
 
+	-- Game thật fire ("Fruits: Consume", uid, 1) -> dạng uid + amount là chuẩn.
+	-- Thử dạng uid+amount trước; nếu server không nhận batch thì fallback bắn
+	-- từng cái 1 (uid, 1) giống hệt obfuscator để đảm bảo luôn ăn.
 	local forms = {
-		-- form 1: RemoteEvent with the entry table + amount (original)
-		function() return fire("Fruits: Consume", entry, amount) end,
-		-- form 2: RemoteEvent with uid + amount
+		-- form 1: RemoteEvent uid + amount (CHUẨN theo game)
 		function() return fire("Fruits: Consume", uid, amount) end,
-		-- form 3: RemoteEvent with { uid } + amount
+		-- form 2: RemoteEvent entry table + amount
+		function() return fire("Fruits: Consume", entry, amount) end,
+		-- form 3: RemoteEvent { uid } + amount
 		function() return fire("Fruits: Consume", { uid }, amount) end,
 		-- form 4: module command directly
 		function()
@@ -2678,6 +2684,26 @@ local function consumeFruitStack(fruitCmds, uid, entry, amount)
 			fruitConsumeForm = idx
 			return true, before - after
 		end
+	end
+
+	-- Fallback cuối: bắn từng cái 1 đúng như game (uid, 1), lặp tới khi hết amount.
+	local consumed = 0
+	for _ = 1, amount do
+		local cur = getFruitAmount(uid)
+		if cur <= 0 then break end
+		pcall(function() return fire("Fruits: Consume", uid, 1) end)
+		invalidateSaveCache()
+		task.wait(0.12)
+		local after = getFruitAmount(uid)
+		if after < cur then
+			consumed += (cur - after)
+			fruitConsumeForm = 1
+		else
+			break
+		end
+	end
+	if consumed > 0 then
+		return true, consumed
 	end
 	return false, 0
 end
