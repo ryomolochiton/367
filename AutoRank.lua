@@ -83,9 +83,10 @@ local function TeleportToZone(zoneFolder)
     if not spawnPosition or (root.Position - spawnPosition).Magnitude > 30 then
         root.CFrame = zoneFolder.PERSISTENT.Teleport.CFrame
 
+        local waitStart = os.clock()
         repeat
             task.wait()
-        until not LocalPlayer.Character or IsGrounded()
+        until not LocalPlayer.Character or IsGrounded() or os.clock() - waitStart > 5
 
         if interact then
             root.CFrame = interact.BREAKABLE_SPAWNS.Main.CFrame
@@ -232,17 +233,108 @@ end
 ------------------------------------------------------------------------
 -- Vat pham (Misc / Potion / Enchant)
 ------------------------------------------------------------------------
-function UseMiscItem(itemId, remoteName)
-    local foundUid
-    for uid, item in pairs(Inventory().Misc or {}) do
-        if item.id == itemId then
-            foundUid = uid
+-- So khop id khong phan biet hoa thuong, dau cach, "_" va "-"
+local function NormalizeId(id)
+    return (tostring(id):lower():gsub("[%s_%-]", ""))
+end
+
+local MISSING_MISC_REPORT_INTERVAL = 20 -- giay: in lai moi 20s de khong bi troi khoi console
+local lastMissingMiscReport = {}
+
+-- Khi khong thay item trong Inventory.Misc: in danh sach Misc dang co, va do them cac kho
+-- khac (Potion, Enchant, Egg, ...) xem item co nam sai kho khong
+local function ReportMissingMisc(itemId)
+    local now = os.clock()
+    if lastMissingMiscReport[itemId] and now - lastMissingMiscReport[itemId] < MISSING_MISC_REPORT_INTERVAL then
+        return
+    end
+    lastMissingMiscReport[itemId] = now
+
+    local inventory = Inventory()
+    local entries = {}
+    for _, item in pairs(inventory.Misc or {}) do
+        table.insert(entries, tostring(item.id) .. " x" .. tostring(item._am or 1))
+        if #entries >= 40 then
+            break
         end
     end
 
-    if foundUid then
-        Network.Invoke(remoteName, tostring(foundUid))
+    local wanted = NormalizeId(itemId)
+    local elsewhere = {}
+    for category, items in pairs(inventory) do
+        if category ~= "Misc" and category ~= "Pet" and type(items) == "table" then
+            for _, item in pairs(items) do
+                if type(item) == "table" and item.id ~= nil and #elsewhere < 15 then
+                    local id = NormalizeId(item.id)
+                    if id:find(wanted, 1, true) or (#id >= 4 and wanted:find(id, 1, true)) then
+                        table.insert(elsewhere, tostring(category) .. ":" .. tostring(item.id) .. " x" .. tostring(item._am or 1))
+                    end
+                end
+            end
+        end
     end
+
+    dprint(
+        "Khong thay '" .. itemId .. "' (>= 1) trong Inventory.Misc. Misc dang co: "
+            .. (#entries > 0 and table.concat(entries, ", ") or "(trong)")
+            .. (#elsewhere > 0 and (" | Id tuong tu o kho khac: " .. table.concat(elsewhere, ", ")) or "")
+    )
+end
+
+-- Tim stack theo id: Misc truoc, neu khong co thi tim o cac kho khac (tru Pet) phong khi
+-- game da chuyen vi tri item. Tra ve: uid, soLuong, tenKho (nil, 0 neu khong co)
+local foundOutsideMisc = {}
+
+local function FindMisc(itemId)
+    local wanted = NormalizeId(itemId)
+    local inventory = Inventory()
+
+    local function search(items)
+        for uid, item in pairs(items) do
+            if type(item) == "table" and item.id ~= nil then
+                local have = item._am or 1
+                if have >= 1 and NormalizeId(item.id) == wanted then
+                    return uid, have
+                end
+            end
+        end
+    end
+
+    local uid, have = search(inventory.Misc or {})
+    if uid then
+        return uid, have, "Misc"
+    end
+
+    for category, items in pairs(inventory) do
+        if category ~= "Misc" and category ~= "Pet" and type(items) == "table" then
+            uid, have = search(items)
+            if uid then
+                if not foundOutsideMisc[itemId] then
+                    foundOutsideMisc[itemId] = true
+                    dprint("'" .. itemId .. "' khong o Misc, tim thay o kho: " .. tostring(category))
+                end
+                return uid, have, category
+            end
+        end
+    end
+
+    ReportMissingMisc(itemId)
+    return nil, 0
+end
+
+-- Dung 1 item Misc (Comet, Coin Jar, Lucky Block, Pinata...). Tra ve true neu da goi server.
+function UseMiscItem(itemId, remoteName)
+    local uid = FindMisc(itemId)
+    if not uid then
+        return false
+    end
+
+    local success, ok, result = pcall(Network.Invoke, remoteName, tostring(uid))
+    dprint(
+        "UseMiscItem:", itemId, remoteName, "uid=" .. tostring(uid),
+        "-> pcall=" .. tostring(success), "ok=" .. tostring(ok), "result=" .. tostring(result)
+    )
+    return success
 end
 
 function UsePotion(minTier, amount)
@@ -275,7 +367,6 @@ local function FindPotionUpgrade(wanted)
             local have = potion._am or 1
             if perUpgrade and perUpgrade > 0 then
                 local times = math.min(wanted, math.floor(have / perUpgrade))
-                dprint("Potion upgrade check", potion.id, potion.tn, "have=" .. have, "per=" .. perUpgrade, "times=" .. times)
                 if times >= 1 then
                     return uid, times, have, potion
                 end
@@ -293,7 +384,6 @@ local function FindEnchantUpgrade(wanted)
             local have = enchant._am or 1
             if perUpgrade and perUpgrade > 0 then
                 local times = math.min(wanted, math.floor(have / perUpgrade))
-                dprint("Enchant upgrade check", enchant.id, enchant.tn, "have=" .. have, "per=" .. perUpgrade, "times=" .. times)
                 if times >= 1 then
                     return uid, times, have, enchant
                 end
@@ -558,14 +648,11 @@ end
 ------------------------------------------------------------------------
 -- Quest: kiem tra tai nguyen (tra ve: du?, uid, soLuongDangCo)
 ------------------------------------------------------------------------
-local function CheckMisc(itemId, needed)
-    for uid, item in pairs(Inventory().Misc or {}) do
-        if item.id == itemId then
-            local have = item._am or 1
-            return needed <= have, uid, have
-        end
-    end
-    return false, nil, 0
+-- Moi lan spawn/dung 1 item deu tinh vao quest, nen chi can co it nhat 1 cai
+-- (khong can du ca neededamount, neu khong thi co 1-2 item van khong bao gio duoc spawn)
+local function CheckMisc(itemId)
+    local uid, have = FindMisc(itemId)
+    return uid ~= nil, uid, have
 end
 
 local function CheckPotion(minTier, needed)
@@ -604,16 +691,16 @@ end
 
 local QuestChecks = {
     BEST_COMET = function(quest)
-        return CheckMisc("Comet", quest.neededamount)
+        return CheckMisc("Comet")
     end,
     BEST_COIN_JAR = function(quest)
-        return CheckMisc("Basic Coin Jar", quest.neededamount)
+        return CheckMisc("Basic Coin Jar")
     end,
     BEST_LUCKYBLOCK = function(quest)
-        return CheckMisc("Mini Lucky Block", quest.neededamount)
+        return CheckMisc("Mini Lucky Block")
     end,
     BEST_PINATA = function(quest)
-        return CheckMisc("Mini Pinata", quest.neededamount)
+        return CheckMisc("Mini Pinata")
     end,
     USE_POTION = function(quest)
         return CheckPotion(quest.potiontier, quest.neededamount)
@@ -924,8 +1011,38 @@ end
 -- se giu bot o quest do den khi du dieu kien.
 local SKIP_QUESTS_WITHOUT_RESOURCES = false
 
+local STATUS_INTERVAL = 10 -- giay
+local lastStatusPrint = 0
+
+-- In 1 dong tom tat tat ca quest: priority, can them, co du tai nguyen khong
+local function PrintQuestStatus(sortedQuests)
+    local now = os.clock()
+    if now - lastStatusPrint < STATUS_INTERVAL then
+        return
+    end
+    lastStatusPrint = now
+
+    local parts = {}
+    for _, quest in ipairs(sortedQuests) do
+        local state = "no-check"
+        local check = QuestChecks[quest.questname]
+        if check then
+            local success, can, _, have = pcall(check, quest)
+            state = success and ("can=" .. tostring(can) .. ",have=" .. tostring(have)) or "check-error"
+        end
+        table.insert(
+            parts,
+            tostring(quest.questname) .. "(p" .. tostring(quest.priority) .. ",need=" .. tostring(quest.neededamount) .. "," .. state .. ")"
+        )
+    end
+    dprint("STATUS: " .. table.concat(parts, " | "))
+end
+
 local function RunTopPriorityQuest(quests, isZoneGate)
-    for index, quest in pairs(SortQuestsByPriority(quests)) do
+    local sortedQuests = SortQuestsByPriority(quests)
+    PrintQuestStatus(sortedQuests)
+
+    for index, quest in pairs(sortedQuests) do
         if isZoneGate then
             dprint(index, quest.questname, "-- InitQuest")
         end
