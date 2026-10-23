@@ -378,7 +378,12 @@ local UPGRADE_TIMEOUT = 5 -- giay toi da cho 1 dot gop
 
 -- Quest Collect khong yeu cau tier: tier nao gop duoc cung tinh, uu tien tier THAP truoc.
 -- Tra ve danh sach { uid, times, have, item } vua du de dat 'wanted' (toi da 'limit' muc).
+-- Co stack nao du gop het trong 1 lan thi chi dung stack do, thieu moi gop nhieu stack.
 local function BuildUpgradePlan(items, calcPerTier, isExcluded, wanted, limit)
+    if not wanted or wanted < 1 then
+        return {}
+    end
+
     local candidates = {}
     local now = os.clock()
 
@@ -397,24 +402,39 @@ local function BuildUpgradePlan(items, calcPerTier, isExcluded, wanted, limit)
         return tostring(a.uid) < tostring(b.uid)
     end)
 
-    local plan, remaining = {}, wanted
+    -- So lan gop toi da cua tung stack (tier thap truoc)
+    local steps = {}
     setthreadidentity(4)
     for _, candidate in ipairs(candidates) do
-        if remaining < 1 or (limit and #plan >= limit) then
-            break
-        end
-
         local item = candidate.item
         local success, perUpgrade = pcall(calcPerTier, item.tn or 1)
         local have = item._am or 1
 
         if success and perUpgrade and perUpgrade > 0 then
-            local times = math.min(remaining, math.floor(have / perUpgrade))
-            if times >= 1 then
-                table.insert(plan, { uid = candidate.uid, times = times, have = have, item = item })
-                remaining = remaining - times
+            local capacity = math.floor(have / perUpgrade)
+            if capacity >= 1 then
+                table.insert(steps, { uid = candidate.uid, capacity = capacity, have = have, item = item })
             end
         end
+    end
+
+    -- Uu tien 1 stack du de gop het 'wanted' trong 1 lan
+    for _, step in ipairs(steps) do
+        if step.capacity >= wanted then
+            return { { uid = step.uid, times = wanted, have = step.have, item = step.item } }
+        end
+    end
+
+    -- Khong stack nao du: gop nhieu stack cho toi khi du
+    local plan, remaining = {}, wanted
+    for _, step in ipairs(steps) do
+        if remaining < 1 or (limit and #plan >= limit) then
+            break
+        end
+
+        local times = math.min(remaining, step.capacity)
+        table.insert(plan, { uid = step.uid, times = times, have = step.have, item = step.item })
+        remaining = remaining - times
     end
     return plan
 end
@@ -595,6 +615,16 @@ local QUEST_PRIORITY = {
 
 local DEFAULT_QUEST_PRIORITY = 4
 
+-- Quest dang dung item: neu quest uu tien cao khong lam duoc, quest nao trong nhom nay
+-- DU tai nguyen se duoc lam truoc (thay vi ngoi farm cho quest thieu tai nguyen)
+local ITEM_QUESTS = {
+    USE_POTION = true,
+    BEST_COMET = true,
+    BEST_COIN_JAR = true,
+    BEST_LUCKYBLOCK = true,
+    BEST_PINATA = true,
+}
+
 local function GetQuestPriority(questName)
     return QUEST_PRIORITY[questName] or DEFAULT_QUEST_PRIORITY
 end
@@ -765,6 +795,21 @@ local QuestChecks = {
     end,
     BEST_RAINBOW_PET = function(quest)
         return HasEnoughPets(GetPetsByRarity(1), quest.neededamount)
+    end,
+    -- Du tien mua trung thi moi tinh la lam duoc (truoc day khong co check -> luon bi coi la du)
+    BEST_EGG = function(quest)
+        local eggModule = GetBestEggModule()
+        if not eggModule then
+            return false, nil, 0
+        end
+
+        setthreadidentity(4)
+        local success, price = pcall(CalcEggPricePlayer, eggModule)
+        local currency = GetCurrency()
+        if not success or not price then
+            return false, nil, currency
+        end
+        return currency >= price * (quest.neededamount or 1), nil, currency
     end,
 }
 
@@ -1164,46 +1209,80 @@ local function PrintQuestStatus(sortedQuests)
     dprint("STATUS: " .. table.concat(parts, " | "))
 end
 
+-- Tra ve canDo, soLuongDangCo cua 1 quest
+local function EvaluateQuest(quest)
+    local check = QuestChecks[quest.questname]
+    if not check then
+        return true, 0
+    end
+
+    local ok, _, amount = check(quest)
+    return ok, amount or 0
+end
+
+-- Trong cung muc uu tien: chon quest LAM DUOC NGAY (du tai nguyen) dau tien theo slot.
+-- Neu khong quest nao lam duoc thi lay quest dau tien cua muc do (farm zone tot nhat).
 local function RunTopPriorityQuest(quests, isZoneGate)
     local sortedQuests = SortQuestsByPriority(quests)
     PrintQuestStatus(sortedQuests)
 
-    for index, quest in pairs(sortedQuests) do
+    local topPriority = sortedQuests[1] and sortedQuests[1].priority
+    local chosen, fallback
+
+    for index, quest in ipairs(sortedQuests) do
+        -- Chi xet quest cung muc uu tien cao nhat (tru khi bat SKIP_QUESTS_WITHOUT_RESOURCES)
+        if not SKIP_QUESTS_WITHOUT_RESOURCES and quest.priority ~= topPriority then
+            break
+        end
+
         if isZoneGate then
             dprint(index, quest.questname, "-- InitQuest")
         end
 
-        local canDo, have = true, 0
-        local check = QuestChecks[quest.questname]
-        if check then
-            local ok, _, amount = check(quest)
-            canDo, have = ok, amount or 0
+        local canDo, have = EvaluateQuest(quest)
+        if canDo then
+            chosen = quest
+            break
         end
 
-        if canDo or not SKIP_QUESTS_WITHOUT_RESOURCES then
-            NoteActiveQuest(quest, isZoneGate, not canDo)
-            if not isZoneGate then
-                HighlightQuest(quest, #quests)
-            end
+        fallback = fallback or quest
 
-            if canDo then
-                MakeQuest(quest.questname, {
-                    amount = quest.amount,
-                    potiontier = quest.potiontier,
-                    neededamount = quest.neededamount,
-                })
-            else
-                TeleportToZone(GetMaximumZoneInfo().Folder)
-            end
-            return
-        end
-
-        if isZoneGate then
+        if isZoneGate and SKIP_QUESTS_WITHOUT_RESOURCES then
             dprint(
                 "You don't have enough resources for quest: " .. tostring(quest.questname)
                     .. " (have: " .. tostring(have) .. ", need: " .. tostring(quest.neededamount) .. "). Skipping."
             )
         end
+    end
+
+    -- Muc uu tien cao nhat khong quest nao lam duoc: tim quest dung item co du tai nguyen
+    if not chosen and not SKIP_QUESTS_WITHOUT_RESOURCES then
+        for _, quest in ipairs(sortedQuests) do
+            if ITEM_QUESTS[quest.questname] and quest.priority ~= topPriority and EvaluateQuest(quest) then
+                chosen = quest
+                break
+            end
+        end
+    end
+
+    local quest = chosen or (not SKIP_QUESTS_WITHOUT_RESOURCES and fallback or nil)
+    if not quest then
+        return
+    end
+
+    NoteActiveQuest(quest, isZoneGate, chosen == nil)
+    if not isZoneGate then
+        HighlightQuest(quest, #quests)
+    end
+
+    if chosen then
+        MakeQuest(quest.questname, {
+            amount = quest.amount,
+            potiontier = quest.potiontier,
+            neededamount = quest.neededamount,
+        })
+    else
+        TeleportToZone(GetMaximumZoneInfo().Folder)
     end
 end
 
