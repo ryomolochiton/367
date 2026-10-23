@@ -3102,6 +3102,22 @@ Core.CombineCards = function()
 	invalidateSaveCache()
 end
 
+-- === Blacklist pet EVENT cho Auto Fuse (pet không nở từ egg => không fuse được) ===
+local EVENT_PETS_MANUAL = {
+	-- ["Tên Pet"] = true,
+}
+
+local function isEventPet(entry)
+	if typeof(entry) ~= "table" then return false end
+	local id = entry.id
+	if typeof(id) ~= "string" then return false end
+	if EVENT_PETS_MANUAL[id] then return true end
+	local cfg = Modules.PetsDir and Modules.PetsDir[id]
+	if typeof(cfg) ~= "table" then return false end
+	-- Pet thường nở từ egg (có fromEgg). Pet event/đặc biệt KHÔNG => chặn.
+	return cfg.fromEgg == nil
+end
+
 Core.FusePets = function()
 	local save = getSaveCached()
 	if not save or typeof(save.Inventory) ~= "table" or not save.Inventory.Pet then
@@ -3111,7 +3127,7 @@ Core.FusePets = function()
 	if not items or not items.Pet or not items.Pet.From then return end
 	local uids = {}
 	for uid, entry in pairs(save.Inventory.Pet) do
-		if typeof(entry) == "table" then
+		if typeof(entry) == "table" and not isEventPet(entry) then   -- << chặn pet event
 			local ok, instance = pcall(items.Pet.From, items.Pet, entry)
 			if ok and instance then
 				local isRainbow = instance.IsRainbow and instance:IsRainbow()
