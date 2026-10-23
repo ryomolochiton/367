@@ -374,9 +374,11 @@ end
 local upgradeBlacklist = {}
 local UPGRADE_BLACKLIST_TIME = 30
 
+local UPGRADE_TIMEOUT = 5 -- giay toi da cho 1 dot gop
+
 -- Quest Collect khong yeu cau tier: tier nao gop duoc cung tinh, uu tien tier THAP truoc.
--- Tra ve: uid, soLanGop, soLuongDangCo, vatPham (hoac nil neu khong gop duoc)
-local function FindUpgrade(items, calcPerTier, isExcluded, wanted)
+-- Tra ve danh sach { uid, times, have, item } vua du de dat 'wanted' (toi da 'limit' muc).
+local function BuildUpgradePlan(items, calcPerTier, isExcluded, wanted, limit)
     local candidates = {}
     local now = os.clock()
 
@@ -395,55 +397,81 @@ local function FindUpgrade(items, calcPerTier, isExcluded, wanted)
         return tostring(a.uid) < tostring(b.uid)
     end)
 
+    local plan, remaining = {}, wanted
     setthreadidentity(4)
     for _, candidate in ipairs(candidates) do
+        if remaining < 1 or (limit and #plan >= limit) then
+            break
+        end
+
         local item = candidate.item
         local success, perUpgrade = pcall(calcPerTier, item.tn or 1)
         local have = item._am or 1
 
         if success and perUpgrade and perUpgrade > 0 then
-            local times = math.min(wanted, math.floor(have / perUpgrade))
+            local times = math.min(remaining, math.floor(have / perUpgrade))
             if times >= 1 then
-                return candidate.uid, times, have, item
+                table.insert(plan, { uid = candidate.uid, times = times, have = have, item = item })
+                remaining = remaining - times
             end
         end
+    end
+    return plan
+end
+
+-- Chi de kiem tra: stack dau tien gop duoc
+local function FindPotionUpgrade(wanted)
+    local step = BuildUpgradePlan(Inventory().Potion, CalcPotionsPerTierRequired, IsExcludedPotion, wanted, 1)[1]
+    if step then
+        return step.uid, step.times, step.have, step.item
     end
     return nil
 end
 
-local function FindPotionUpgrade(wanted)
-    return FindUpgrade(Inventory().Potion, CalcPotionsPerTierRequired, IsExcludedPotion, wanted)
-end
-
 local function FindEnchantUpgrade(wanted)
-    return FindUpgrade(Inventory().Enchant, CalcEnchantsPerTierRequired, IsExcludedEnchant, wanted)
+    local step = BuildUpgradePlan(Inventory().Enchant, CalcEnchantsPerTierRequired, IsExcludedEnchant, wanted, 1)[1]
+    if step then
+        return step.uid, step.times, step.have, step.item
+    end
+    return nil
 end
 
--- Tra ve true neu da gop. Chi gop 1 stack moi lan goi.
-local function RunUpgrade(find, remoteName, wanted)
+-- Gop TAT CA stack can thiet trong 1 luot (song song), tra ve true neu co gop.
+local function RunUpgrade(items, calcPerTier, isExcluded, remoteName, wanted)
     if not wanted or wanted < 1 then
         return false
     end
 
-    local uid, times, _, item = find(wanted)
-    if not uid then
+    local plan = BuildUpgradePlan(items, calcPerTier, isExcluded, wanted)
+    if #plan == 0 then
         return false
     end
 
-    print("Combining:", item.id, item.tn, times)
-    local success, ok = pcall(Network.Invoke, remoteName, uid, times)
-    if not success or ok == false then
-        upgradeBlacklist[uid] = os.clock() + UPGRADE_BLACKLIST_TIME
+    local pending = #plan
+    for _, step in ipairs(plan) do
+        task.spawn(function()
+            print("Combining:", step.item.id, step.item.tn, step.times)
+            local success, ok = pcall(Network.Invoke, remoteName, step.uid, step.times)
+            if not success or ok == false then
+                upgradeBlacklist[step.uid] = os.clock() + UPGRADE_BLACKLIST_TIME
+            end
+            pending = pending - 1
+        end)
+    end
+
+    local waitStart = os.clock()
+    while pending > 0 and os.clock() - waitStart < UPGRADE_TIMEOUT do
+        task.wait()
     end
     return true
 end
 
 local function CombinePotions(wanted)
-    return RunUpgrade(FindPotionUpgrade, "UpgradePotionsMachine_Activate", wanted)
+    return RunUpgrade(Inventory().Potion, CalcPotionsPerTierRequired, IsExcludedPotion, "UpgradePotionsMachine_Activate", wanted)
 end
 
 local function CombineEnchants(wanted)
-    return RunUpgrade(FindEnchantUpgrade, "UpgradeEnchantsMachine_Activate", wanted)
+    return RunUpgrade(Inventory().Enchant, CalcEnchantsPerTierRequired, IsExcludedEnchant, "UpgradeEnchantsMachine_Activate", wanted)
 end
 
 ------------------------------------------------------------------------
@@ -770,6 +798,31 @@ local RARE_EGG_CAPSULES = {
 -- Luu CFrame khi da thay, lan sau xa thi tele thang toi do de stream lai.
 local capsuleCFrames = {}
 
+-- Vi tri truoc khi di hatch capsule, de quay lai khi xong quest
+local rareEggActive = false
+local rareEggReturnCFrame = nil
+local rareEggRan = false
+
+local function ReturnFromRareEgg()
+    if not rareEggActive then
+        return
+    end
+
+    local cframe = rareEggReturnCFrame
+    rareEggActive, rareEggReturnCFrame = false, nil
+
+    local root = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    if not root then
+        return
+    end
+
+    if cframe then
+        root.CFrame = cframe
+    else
+        TeleportToZone(GetMaximumZoneInfo().Folder)
+    end
+end
+
 local function GetCapsuleCFrame(worldNumber, capsuleName)
     local eggs = Workspace.__THINGS:FindFirstChild("Eggs")
     local worldFolder = eggs and eggs:FindFirstChild("World" .. worldNumber)
@@ -854,6 +907,14 @@ local QuestHandlers = {
             return
         end
 
+        rareEggRan = true
+        if not rareEggActive then
+            rareEggActive = true
+            local knownCFrame = capsuleCFrames[worldNumber]
+            local nearCapsule = knownCFrame and (root.Position - knownCFrame.Position).Magnitude < 60
+            rareEggReturnCFrame = (not nearCapsule) and root.CFrame or nil
+        end
+
         local capsuleCFrame = GetCapsuleCFrame(worldNumber, capsuleName)
         if capsuleCFrame then
             capsuleCFrames[worldNumber] = capsuleCFrame
@@ -906,6 +967,11 @@ local QuestHandlers = {
 
 -- Chay quest: neu co handler thi goi, khong thi chi farm o zone tot nhat
 function MakeQuest(questName, args)
+    -- Doi sang quest khac: quay lai vi tri cu truoc
+    if questName ~= "HATCH_RARE_PET" then
+        ReturnFromRareEgg()
+    end
+
     local zone = GetMaximumZoneInfo()
     local handler = QuestHandlers[questName]
 
@@ -1143,7 +1209,7 @@ end
 
 local startupTeleportDone = false
 
-function InitQuest()
+local function RunQuests()
     -- Lan chay dau tien: tele toi zone farm du co quest hay khong
     if not startupTeleportDone then
         local character = LocalPlayer.Character
@@ -1176,6 +1242,16 @@ function InitQuest()
         elseif not TryRebirthOrBuyZone(maxZone, nextZone) then
             TeleportToZone(maxZone.ZoneFolder)
         end
+    end
+end
+
+function InitQuest()
+    rareEggRan = false
+    RunQuests()
+
+    -- Handler hatch capsule khong chay trong luot nay = quest da xong -> quay lai
+    if rareEggActive and not rareEggRan then
+        ReturnFromRareEgg()
     end
 end
 
