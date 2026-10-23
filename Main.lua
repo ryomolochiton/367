@@ -1757,6 +1757,29 @@ local function tryConsumeFlagWithCtx(flagId, amount, ctx, pos)
 		return success
 	end
 
+	-- ✅ SIGNATURE THẬT (bắt được từ FlagSniffer lúc đặt cờ tay):
+	--   FlexibleFlagCmds.Consume(displayName, UID, amount)
+	--     -> InvokeServer("FlexibleFlags_Consume", "Coins Flag", <uid>, <amount>)
+	--   arg2 LÀ UID của item cờ trong inventory (string hex 32 ký tự),
+	--   KHÔNG phải position/ctx như code cũ truyền -> nên server bỏ qua.
+	local flagUid = findInventoryUid(flagId) or findInventoryUid(settings.SelectedFlag)
+	if flagUid then
+		if typeof(flagCmds) == "table" and typeof(flagCmds.Consume) == "function" then
+			if try("flex-name-uid-amt", flagCmds.Consume, settings.SelectedFlag, flagUid, amount) then
+				return true, "flex-name-uid-amt"
+			end
+			if flagId ~= settings.SelectedFlag
+				and try("flex-id-uid-amt", flagCmds.Consume, flagId, flagUid, amount) then
+				return true, "flex-id-uid-amt"
+			end
+		end
+		if try("remote-name-uid-amt", function()
+			return invoke("FlexibleFlags_Consume", settings.SelectedFlag, flagUid, amount)
+		end) then
+			return true, "remote-name-uid-amt"
+		end
+	end
+
 	-- Directory ZoneFlags được key bằng TÊN HIỂN THỊ ("Coins Flag"), KHÔNG phải id inventory.
 	-- Resolve flagDir theo nhiều kiểu để không bị trượt key -> bỏ qua cả nhánh ActivateFlag.
 	local function resolveFlagDir()
