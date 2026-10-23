@@ -259,6 +259,7 @@ local defaults = {
 	EmpowerEnchants = false,
 	CardCombine = false,
 	FusePets = false,
+	FuseAmount = 5,
 	GoldMachine = false,
 	RainbowMachine = false,
 	CoinJar = false,
@@ -324,7 +325,7 @@ local PERSIST_KEYS = {
 	"FarmTreehouse",
 	"UpgradeFruits", "UpgradeFruitsShiny",
 	"UpgradePotions", "UpgradeEnchants", "EmpowerEnchants",
-	"CardCombine", "FusePets", "GoldMachine", "RainbowMachine",
+	"CardCombine", "FusePets", "FuseAmount", "GoldMachine", "RainbowMachine",
 	"CoinJar", "Comet",
 	"AutoRank",
 	"SelectedFlag", "AutoUseFlagInZone", "FlagAmount",
@@ -3122,9 +3123,11 @@ Core.FusePets = function()
 			end
 		end
 	end
-	if #uids < 5 then return end
+	local amount = tonumber(settings.FuseAmount) or 5
+	if amount < 2 then amount = 2 end
+	if #uids < amount then return end
 	local payload = {}
-	for i = 1, math.min(#uids, 5) do
+	for i = 1, math.min(#uids, amount) do
 		payload[uids[i]] = 1
 	end
 	invoke("FuseMachine_Activate", payload)
@@ -4868,6 +4871,12 @@ if tabs.auto then
 	tabs.auto:CreateToggle({
 		Name = "Auto Fuse Pets (Rainbow/Golden/Shiny)", CurrentValue = settings.FusePets, Flag = "FusePets",
 		Callback = toggleLoop("FusePets", 5, Core.FusePets),
+	})
+	tabs.auto:CreateSlider({
+		Name = "Fuse Amount (số lượng Pet mỗi lần ép)",
+		Range = { 2, 10 }, Increment = 1, Suffix = "pets",
+		CurrentValue = settings.FuseAmount or 5, Flag = "FuseAmount",
+		Callback = function(value) settings.FuseAmount = value; queueSave() end,
 	})
 	tabs.auto:CreateToggle({
 		Name = "Auto Gold Machine", CurrentValue = settings.GoldMachine, Flag = "GoldMachine",
