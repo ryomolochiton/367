@@ -1757,11 +1757,45 @@ local function tryConsumeFlagWithCtx(flagId, amount, ctx, pos)
 		return success
 	end
 
-	if typeof(flagCmds) == "table" and typeof(flagCmds.ActivateFlag) == "function" and zoneFlagsDir then
-		local flagDir = zoneFlagsDir[flagId]
+	-- Directory ZoneFlags được key bằng TÊN HIỂN THỊ ("Coins Flag"), KHÔNG phải id inventory.
+	-- Resolve flagDir theo nhiều kiểu để không bị trượt key -> bỏ qua cả nhánh ActivateFlag.
+	local function resolveFlagDir()
+		if typeof(zoneFlagsDir) ~= "table" then return nil end
+		local displayName = settings.SelectedFlag
+		local dir = zoneFlagsDir[displayName] or zoneFlagsDir[flagId]
+		if dir then return dir end
+		for key, val in pairs(zoneFlagsDir) do
+			if typeof(val) == "table" then
+				if val._id == flagId or key == flagId or key == displayName
+					or val.Name == displayName or val._id == displayName then
+					return val
+				end
+			end
+		end
+		return nil
+	end
+
+	-- Context đặt cờ tự động tại vị trí hiện tại (khác với SpatialQuery = cờ đã có).
+	local placeCtx = nil
+	if typeof(flagCmds) == "table" and typeof(flagCmds.GetMaxPlaceAutomaticContext) == "function" then
+		local okc, c = pcall(flagCmds.GetMaxPlaceAutomaticContext, pos or root.Position)
+		if okc then placeCtx = c end
+	end
+
+	if typeof(flagCmds) == "table" and typeof(flagCmds.ActivateFlag) == "function" then
+		local flagDir = resolveFlagDir()
 		if flagDir then
+			if placeCtx ~= nil and try("activate-dir-placectx", flagCmds.ActivateFlag, flagDir, placeCtx) then
+				return true, "activate-dir-placectx"
+			end
+			if try("activate-dir-amount", flagCmds.ActivateFlag, flagDir, amount) then
+				return true, "activate-dir-amount"
+			end
 			if ctx and try("activate-dir-ctx", flagCmds.ActivateFlag, flagDir, ctx) then
 				return true, "activate-dir-ctx"
+			end
+			if try("activate-dir-pos", flagCmds.ActivateFlag, flagDir, pos or root.Position) then
+				return true, "activate-dir-pos"
 			end
 			if try("activate-dir-opts", flagCmds.ActivateFlag, flagDir, { Amount = amount }) then
 				return true, "activate-dir-opts"
@@ -1769,9 +1803,13 @@ local function tryConsumeFlagWithCtx(flagId, amount, ctx, pos)
 			if try("activate-dir", flagCmds.ActivateFlag, flagDir) then
 				return true, "activate-dir"
 			end
-			if try("activate-dir-amount", flagCmds.ActivateFlag, flagDir, amount) then
-				return true, "activate-dir-amount"
-			end
+		end
+		-- Thử trực tiếp bằng tên hiển thị / id (một số phiên bản nhận string).
+		if try("activate-name-amount", flagCmds.ActivateFlag, settings.SelectedFlag, amount) then
+			return true, "activate-name-amount"
+		end
+		if try("activate-id-amount", flagCmds.ActivateFlag, flagId, amount) then
+			return true, "activate-id-amount"
 		end
 	end
 
@@ -1803,6 +1841,36 @@ local function tryConsumeFlagWithCtx(flagId, amount, ctx, pos)
 		if try("zflex-pos", zoneFlagCmds.Consume, flagId, amount, pos) then
 			return true, "zflex-pos"
 		end
+	end
+
+	-- RemoteEvent thật để đặt cờ tự động là "FlexibleFlags_Activate" (fire, không phải invoke).
+	local activateDir = resolveFlagDir()
+	if activateDir then
+		if placeCtx ~= nil and try("fire-activate-dir-placectx", function()
+			return fire("FlexibleFlags_Activate", activateDir, placeCtx)
+		end) then
+			return true, "fire-activate-dir-placectx"
+		end
+		if try("fire-activate-dir-amount", function()
+			return fire("FlexibleFlags_Activate", activateDir, amount)
+		end) then
+			return true, "fire-activate-dir-amount"
+		end
+		if try("fire-activate-dir-pos", function()
+			return fire("FlexibleFlags_Activate", activateDir, pos or root.Position)
+		end) then
+			return true, "fire-activate-dir-pos"
+		end
+	end
+	if placeCtx ~= nil and try("fire-activate-name-placectx", function()
+		return fire("FlexibleFlags_Activate", settings.SelectedFlag, placeCtx)
+	end) then
+		return true, "fire-activate-name-placectx"
+	end
+	if try("fire-activate-name-amount", function()
+		return fire("FlexibleFlags_Activate", settings.SelectedFlag, amount)
+	end) then
+		return true, "fire-activate-name-amount"
 	end
 
 	if ctx and try("remote-ctx", function()
