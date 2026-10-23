@@ -3124,7 +3124,7 @@ Core.FusePets = function()
 		end
 	end
 	local amount = tonumber(settings.FuseAmount) or 5
-	if amount < 1 then amount = 1 end
+	if amount < 2 then amount = 2 end
 	if #uids < amount then return end
 	local payload = {}
 	for i = 1, math.min(#uids, amount) do
@@ -4870,11 +4870,11 @@ if tabs.auto then
 	})
 	tabs.auto:CreateToggle({
 		Name = "Auto Fuse Pets (Rainbow/Golden/Shiny)", CurrentValue = settings.FusePets, Flag = "FusePets",
-		Callback = toggleLoop("FusePets", 0.5, Core.FusePets),
+		Callback = toggleLoop("FusePets", 5, Core.FusePets),
 	})
 	tabs.auto:CreateSlider({
 		Name = "Fuse Amount (số lượng Pet mỗi lần ép)",
-		Range = { 1, 100 }, Increment = 1, Suffix = "pets",
+		Range = { 2, 10 }, Increment = 1, Suffix = "pets",
 		CurrentValue = settings.FuseAmount or 5, Flag = "FuseAmount",
 		Callback = function(value) settings.FuseAmount = value; queueSave() end,
 	})
@@ -5452,7 +5452,7 @@ task.spawn(function()
 	if settings.UpgradeEnchants then startLoop("UpgradeEnchants", 2, Core.UpgradeEnchants) end
 	if settings.EmpowerEnchants then startLoop("EmpowerEnchants", 2, Core.EmpowerEnchants) end
 	if settings.CardCombine then startLoop("CardCombine", 3, Core.CombineCards) end
-	if settings.FusePets then startLoop("FusePets", 0.5, Core.FusePets) end
+	if settings.FusePets then startLoop("FusePets", 5, Core.FusePets) end
 	if settings.GoldMachine then startLoop("GoldMachine", 5, Core.GoldMachine) end
 	if settings.RainbowMachine then startLoop("RainbowMachine", 5, Core.RainbowMachine) end
 	if settings.CoinJar then startLoop("CoinJar", 5, Core.CoinJar) end
