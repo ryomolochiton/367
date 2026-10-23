@@ -1481,43 +1481,119 @@ Core.OptimizeBreakables = function()
 	end)
 end
 
-Core.AntiLag = function()
-	local removed = 0
-	local function processContainer(container)
-		if not container then return end
-		for _, descendant in ipairs(container:GetDescendants()) do
-			if descendant:IsA("ParticleEmitter")
-				or descendant:IsA("Beam")
-				or descendant:IsA("Trail")
-				or descendant:IsA("Smoke")
-				or descendant:IsA("Fire")
-				or descendant:IsA("Sparkles")
-			then
-				pcall(function() descendant.Enabled = false end)
-				removed += 1
-			elseif descendant:IsA("Texture") or descendant:IsA("Decal") then
-				pcall(function() descendant.Transparency = 1 end)
-				removed += 1
-			end
-		end
+-- Loại instance bị triệt hẳn khi AntiLag bật.
+local ANTILAG_KILL = {
+	ParticleEmitter = true, Beam = true, Trail = true, Smoke = true,
+	Fire = true, Sparkles = true, Explosion = true, Sound = true,
+	PointLight = true, SpotLight = true, SurfaceLight = true,
+}
+
+-- State của AntiLag: hook instance mới + cache đã xử lý để khỏi quét lại.
+local antiLagState = { conn = nil, seen = setmetatable({}, { __mode = "k" }) }
+
+-- Triệt 1 instance tuỳ loại. Trả về true nếu có tác động.
+local function antiLagStrip(descendant)
+	if antiLagState.seen[descendant] then return false end
+	local class = descendant.ClassName
+	if ANTILAG_KILL[class] then
+		antiLagState.seen[descendant] = true
+		pcall(function() descendant:Destroy() end)
+		return true
+	elseif descendant:IsA("Texture") or descendant:IsA("Decal") then
+		antiLagState.seen[descendant] = true
+		pcall(function() descendant.Transparency = 1 end)
+		return true
+	elseif descendant:IsA("SurfaceAppearance") then
+		antiLagState.seen[descendant] = true
+		pcall(function() descendant:Destroy() end)
+		return true
+	elseif descendant:IsA("BasePart") then
+		antiLagState.seen[descendant] = true
+		pcall(function()
+			descendant.Material = Enum.Material.SmoothPlastic
+			descendant.Reflectance = 0
+			descendant.CastShadow = false
+		end)
+		return true
 	end
-	processContainer(workspace:FindFirstChild("__THINGS"))
-	processContainer(workspace)
+	return false
+end
+
+-- Hạ Lighting + Terrain + FPS cap. Chỉ dùng thứ ăn chắc lúc runtime.
+local function antiLagCrushGraphics()
 	pcall(function()
 		local lighting = game:GetService("Lighting")
-		lighting.FogEnd = 100000
+		lighting.FogEnd = 9e9
 		lighting.GlobalShadows = false
+		lighting.EnvironmentDiffuseScale = 0
+		lighting.EnvironmentSpecularScale = 0
 		for _, child in ipairs(lighting:GetChildren()) do
-			if child:IsA("Atmosphere") or child:IsA("BloomEffect")
-				or child:IsA("BlurEffect") or child:IsA("ColorCorrectionEffect")
-				or child:IsA("DepthOfFieldEffect") or child:IsA("SunRaysEffect")
+			if child:IsA("PostEffect") or child:IsA("Atmosphere")
+				or child:IsA("Clouds") or child:IsA("Sky")
 			then
-				child.Enabled = false
-				removed += 1
+				pcall(function() child:Destroy() end)
 			end
 		end
 	end)
+	pcall(function()
+		local terrain = workspace:FindFirstChildOfClass("Terrain")
+		if terrain then
+			terrain.WaterWaveSize = 0
+			terrain.WaterWaveSpeed = 0
+			terrain.WaterReflectance = 0
+			terrain.WaterTransparency = 1
+			terrain.Decoration = false
+		end
+	end)
+	-- QualityLevel chỉ ăn nếu executor cho ghi UserSettings.
+	pcall(function()
+		settings().Rendering.QualityLevel = Enum.QualityLevel.Level01
+	end)
+	if typeof(setfpscap) == "function" then
+		pcall(setfpscap, 1000)
+	end
+end
+
+Core.AntiLag = function()
+	local removed = 0
+	-- Quét các container chính + character người chơi.
+	for _, container in ipairs({ workspace:FindFirstChild("__THINGS"), workspace }) do
+		if container then
+			for _, descendant in ipairs(container:GetDescendants()) do
+				if antiLagStrip(descendant) then removed += 1 end
+			end
+		end
+	end
+	for _, player in ipairs(playersService:GetPlayers()) do
+		local character = player.Character
+		if character then
+			for _, descendant in ipairs(character:GetDescendants()) do
+				antiLagStrip(descendant)
+			end
+		end
+	end
+	antiLagCrushGraphics()
+	-- Hook instance mới sinh ra, khỏi phải quét lại liên tục.
+	if not antiLagState.conn then
+		antiLagState.conn = workspace.DescendantAdded:Connect(function(descendant)
+			if settings.AntiLag then
+				task.defer(antiLagStrip, descendant)
+			end
+		end)
+	end
 	return removed
+end
+
+-- Gỡ hook khi tắt AntiLag.
+Core.StopAntiLag = function()
+	if antiLagState.conn then
+		pcall(function() antiLagState.conn:Disconnect() end)
+		antiLagState.conn = nil
+	end
+	table.clear(antiLagState.seen)
+	if typeof(setfpscap) == "function" then
+		pcall(setfpscap, 0)
+	end
 end
 
 Core.Daycare = function()
@@ -2995,7 +3071,13 @@ Core.UpgradeFruits = function(shinyOnly)
 	for uid, entry in pairs(save.Inventory.Fruit) do
 		if typeof(entry) == "table" and (entry._am or 0) > 0 then
 			if table.find(wanted, entry.id) then
-				if not shinyOnly or entry.sh then
+				-- Máy shiny biến fruit THƯỜNG -> shiny, nên chỉ gửi fruit CHƯA shiny.
+				-- Fruit đã shiny (entry.sh) thì bỏ qua, không gửi vào máy shiny nữa.
+				if shinyOnly then
+					if not entry.sh then
+						payload[uid] = 1
+					end
+				else
 					payload[uid] = 1
 				end
 			end
@@ -4655,6 +4737,8 @@ if tabs.farm then
 					Content = ("Đã xoá %d hiệu ứng"):format(removed or 0),
 					Duration = 3,
 				})
+			else
+				Core.StopAntiLag()
 			end
 		end,
 	})
