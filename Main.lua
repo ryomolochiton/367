@@ -1,8 +1,8 @@
 -- =====================================================
--- VRT HUB — PET SIMULATOR 99 v1.9.8
+-- VRT HUB — PET SIMULATOR 99 v1.9.9
 -- Bỏ hết button "once/now", chỉ giữ toggle
 -- Flag: chỉ dùng khi trong zone, không teleport
--- Egg hook: stacked TextLabel, dòng mới đẩy dòng cũ lên
+-- Egg hook: re-find frontend khi đổi world, label neo đúng chỗ
 -- =====================================================
 
 if getgenv().VRT_LOADED then
@@ -203,7 +203,7 @@ end
 -- -----------------------------------------------------
 local vrt = getgenv().VRT or {}
 getgenv().VRT = vrt
-vrt.Version = "1.9.8"
+vrt.Version = "1.9.9"
 vrt.connections = {}
 vrt.loops = {}
 vrt.fruitLog = {}
@@ -694,10 +694,11 @@ runService.RenderStepped:Connect(function()
 end)
 
 -- -----------------------------------------------------
--- EGG ANIMATION HOOK (stacked messages, newest at bottom)
+-- EGG ANIMATION HOOK (re-find frontend khi đổi world)
 -- -----------------------------------------------------
 local eggHookState = {
 	frontend = nil,
+	script = nil,
 	path = nil,
 	funcName = nil,
 	hook = nil,
@@ -724,14 +725,14 @@ local function cleanupStaleEggGuis()
 	end
 end
 
--- Message mới nhất nằm ở dưới cùng, cũ bị đẩy lên trên.
+-- Message mới nhất ở đáy container, cũ bị đẩy lên trên.
 local function relayoutEggMessages()
 	local n = #eggMsgList
 	for i, entry in ipairs(eggMsgList) do
 		local label = entry.label
 		if label and label.Parent then
 			local offset = -(n - i) * EGG_MSG_HEIGHT
-			label.Position = UDim2.new(0.5, 0, 0, offset)
+			label.Position = UDim2.new(0.5, 0, 1, offset)
 		end
 	end
 end
@@ -740,7 +741,7 @@ local function createEggMsgLabel()
 	local label = Instance.new("TextLabel")
 	label.Name = "Message"
 	label.AnchorPoint = Vector2.new(0.5, 1)
-	label.Position = UDim2.new(0.5, 0, 0, 0)
+	label.Position = UDim2.new(0.5, 0, 1, 0)
 	label.Size = UDim2.new(0, 900, 0, EGG_MSG_HEIGHT)
 	label.BackgroundTransparency = 1
 	label.BorderSizePixel = 0
@@ -798,6 +799,7 @@ local function ensureEggMsgGui()
 	eggMsgContainer.Size = UDim2.new(0, 900, 0, EGG_MSG_HEIGHT * EGG_MSG_MAX)
 	eggMsgContainer.BackgroundTransparency = 1
 	eggMsgContainer.BorderSizePixel = 0
+	eggMsgContainer.ClipsDescendants = false
 	eggMsgContainer.Parent = eggMsgGui
 end
 
@@ -862,13 +864,14 @@ local function destroyEggMsgGui()
 	eggMsgList = {}
 end
 
+local FRONTEND_PATHS = {
+	{ "PlayerScripts", "Scripts", "Game", "Egg Opening Frontend" },
+	{ "PlayerScripts", "Scripts", "Core", "Egg Opening Frontend" },
+	{ "PlayerScripts", "PlayerModule", "Egg Opening Frontend" },
+}
+
 local function findEggFrontend()
-	local paths = {
-		{ "PlayerScripts", "Scripts", "Game", "Egg Opening Frontend" },
-		{ "PlayerScripts", "Scripts", "Core", "Egg Opening Frontend" },
-		{ "PlayerScripts", "PlayerModule", "Egg Opening Frontend" },
-	}
-	for _, path in ipairs(paths) do
+	for _, path in ipairs(FRONTEND_PATHS) do
 		local node = localPlayer
 		for _, name in ipairs(path) do
 			node = node and node:FindFirstChild(name)
@@ -877,6 +880,7 @@ local function findEggFrontend()
 			local ok, env = pcall(getsenv, node)
 			if ok and typeof(env) == "table" then
 				eggHookState.frontend = env
+				eggHookState.script = node
 				eggHookState.path = table.concat(path, ".")
 				return true
 			end
@@ -885,13 +889,52 @@ local function findEggFrontend()
 	return false
 end
 
-local function applyEggHook()
-	local env = eggHookState.frontend
-	if not env then
-		if not findEggFrontend() then return false end
-		env = eggHookState.frontend
-		if not env then return false end
+local function scanForFrontend()
+	local playerScripts = localPlayer:FindFirstChild("PlayerScripts")
+	if not playerScripts then return false end
+	for _, script in ipairs(playerScripts:GetDescendants()) do
+		if script:IsA("LocalScript") or script:IsA("ModuleScript") then
+			local ok, env = pcall(getsenv, script)
+			if ok and typeof(env) == "table" then
+				for name, value in pairs(env) do
+					if typeof(name) == "string" and typeof(value) == "function"
+						and (name:lower():find("playegg") or name:lower():find("egganim"))
+					then
+						eggHookState.frontend = env
+						eggHookState.script = script
+						eggHookState.path = "scan:" .. script.Name .. "." .. name
+						return true
+					end
+				end
+			end
+		end
 	end
+	return false
+end
+
+local function applyEggHook()
+	-- Script instance bị destroy (đổi world) → re-find.
+	if not eggHookState.script or not eggHookState.script.Parent then
+		eggHookState.frontend = nil
+		eggHookState.script = nil
+		eggHookState.funcName = nil
+	end
+
+	if not eggHookState.frontend then
+		if not findEggFrontend() then
+			if not scanForFrontend() then return false end
+		end
+	end
+
+	-- Re-getsenv để phát hiện env mới (script re-run).
+	local okEnv, freshEnv = pcall(getsenv, eggHookState.script)
+	if okEnv and typeof(freshEnv) == "table" and freshEnv ~= eggHookState.frontend then
+		eggHookState.frontend = freshEnv
+		eggHookState.funcName = nil
+	end
+
+	local env = eggHookState.frontend
+	if not env then return false end
 
 	local funcName = eggHookState.funcName
 	if not funcName or typeof(env[funcName]) ~= "function" then
@@ -900,6 +943,16 @@ local function applyEggHook()
 			if typeof(env[name]) == "function" then
 				funcName = name
 				break
+			end
+		end
+		if not funcName then
+			for name, value in pairs(env) do
+				if typeof(name) == "string" and typeof(value) == "function"
+					and (name:lower():find("playegg") or name:lower():find("egganim"))
+				then
+					funcName = name
+					break
+				end
 			end
 		end
 	end
@@ -949,7 +1002,9 @@ local function applyEggHook()
 end
 
 local function installEggHook()
-	if not eggHookState.frontend then findEggFrontend() end
+	if not eggHookState.frontend then
+		if not findEggFrontend() then scanForFrontend() end
+	end
 	return applyEggHook()
 end
 
@@ -968,10 +1023,23 @@ local function startEggHookLoop()
 	end)
 end
 
+-- Reset hook state khi character respawn (đổi world / rebirth).
+localPlayer.CharacterAdded:Connect(function()
+	task.defer(function()
+		task.wait(1)
+		eggHookState.frontend = nil
+		eggHookState.script = nil
+		eggHookState.funcName = nil
+		if settings.HookEggAnimation or settings.HideEggAnim then
+			pcall(installEggHook)
+		end
+	end)
+end)
+
 task.spawn(function()
 	for _ = 1, 10 do
 		if eggHookState.frontend then break end
-		findEggFrontend()
+		if not findEggFrontend() then scanForFrontend() end
 		task.wait(1)
 	end
 	startEggHookLoop()
@@ -5723,6 +5791,7 @@ getgenv().VRT_Unload = function()
 	eggHookState.hook = nil
 	eggHookState.callOriginal = nil
 	eggHookState.thread = nil
+	eggHookState.script = nil
 	destroyEggMsgGui()
 
 	pcall(saveConfig)
