@@ -1,8 +1,8 @@
 -- =====================================================
--- VRT HUB — PET SIMULATOR 99 v1.9.5
+-- VRT HUB — PET SIMULATOR 99 v1.9.7
 -- Bỏ hết button "once/now", chỉ giữ toggle
 -- Flag: chỉ dùng khi trong zone, không teleport
--- Fix: Hook Egg Animation dùng hookfunction + resolve Message.Bottom động
+-- Egg hook: TextLabel tự tạo (không phụ thuộc env.Message/GC)
 -- =====================================================
 
 if getgenv().VRT_LOADED then
@@ -203,7 +203,7 @@ end
 -- -----------------------------------------------------
 local vrt = getgenv().VRT or {}
 getgenv().VRT = vrt
-vrt.Version = "1.9.5"
+vrt.Version = "1.9.7"
 vrt.connections = {}
 vrt.loops = {}
 vrt.fruitLog = {}
@@ -280,8 +280,8 @@ local defaults = {
 	UseDMFarmPoint = false,
 	DMAutoJoin = false,
 	AdminAbuse = false,
-	WebhookUrl = "https://discord.com/api/webhooks/1559513619719389205/7_BLXFReFLUPxroxdVlPeLKwK1t-n1DBc6LB9HKT7V1bRO4Qs1TVJ4ar6f1WItuR_nXQ",
-	WebhookEnabled = true,
+	WebhookUrl = "",
+	WebhookEnabled = false,
 	SelectedWheels = { "All" },
 	SelectedChests = { "All" },
 	SelectedGifts = { "All" },
@@ -694,9 +694,7 @@ runService.RenderStepped:Connect(function()
 end)
 
 -- -----------------------------------------------------
--- EGG ANIMATION HOOK
--- hookfunction lên chính function object (bắt cả call local),
--- env-assign chỉ là fallback. Message.Bottom resolve động mỗi lần.
+-- EGG ANIMATION HOOK (custom TextLabel — reliable)
 -- -----------------------------------------------------
 local eggHookState = {
 	frontend = nil,
@@ -705,20 +703,63 @@ local eggHookState = {
 	hook = nil,
 	callOriginal = nil,
 	hookedTargets = setmetatable({}, { __mode = "k" }),
-	messageFn = nil,
-	messageOwner = nil,
 	thread = nil,
-	lastError = nil,
-	lastVia = nil,
 }
+
+local eggMsgGui = nil
+local eggMsgLabel = nil
+
+local function ensureEggMsgGui()
+	if eggMsgGui and eggMsgGui.Parent then return end
+	local playerGui = localPlayer:FindFirstChild("PlayerGui")
+	if not playerGui then return end
+
+	eggMsgGui = Instance.new("ScreenGui")
+	eggMsgGui.Name = "VRT_EggMsg"
+	eggMsgGui.ResetOnSpawn = false
+	eggMsgGui.IgnoreGuiInset = true
+	eggMsgGui.DisplayOrder = 999
+	eggMsgGui.Parent = playerGui
+
+	eggMsgLabel = Instance.new("TextLabel")
+	eggMsgLabel.Size = UDim2.new(0, 700, 0, 40)
+	eggMsgLabel.Position = UDim2.new(0.5, -350, 1, -140)
+	eggMsgLabel.BackgroundTransparency = 1
+	eggMsgLabel.Font = Enum.Font.GothamBold
+	eggMsgLabel.TextSize = 26
+	eggMsgLabel.TextStrokeTransparency = 0
+	eggMsgLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+	eggMsgLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+	eggMsgLabel.Text = ""
+	eggMsgLabel.Parent = eggMsgGui
+end
+
+local function pushEggMessage(eggName)
+	pcall(function()
+		ensureEggMsgGui()
+		if not eggMsgLabel then return end
+		local maxHatch = getMaxHatch()
+		local color = Color3.fromRGB(math.random(0, 255), math.random(0, 255), math.random(0, 255))
+		eggMsgLabel.Text = "Still Openin " .. tostring(eggName) .. " " .. tostring(maxHatch)
+		eggMsgLabel.TextColor3 = color
+		eggMsgLabel.TextTransparency = 0
+		eggMsgLabel.TextStrokeTransparency = 0
+		task.delay(3, function()
+			if eggMsgLabel then
+				tweenService:Create(eggMsgLabel, TweenInfo.new(0.5), {
+					TextTransparency = 1,
+					TextStrokeTransparency = 1,
+				}):Play()
+			end
+		end)
+	end)
+end
 
 local function findEggFrontend()
 	local paths = {
 		{ "PlayerScripts", "Scripts", "Game", "Egg Opening Frontend" },
 		{ "PlayerScripts", "Scripts", "Core", "Egg Opening Frontend" },
 		{ "PlayerScripts", "PlayerModule", "Egg Opening Frontend" },
-		{ "PlayerScripts", "Scripts", "Game", "Eggs" },
-		{ "PlayerScripts", "Scripts", "Game", "Hatching" },
 	}
 	for _, path in ipairs(paths) do
 		local node = localPlayer
@@ -737,115 +778,10 @@ local function findEggFrontend()
 	return false
 end
 
-local function scanForPlayEgg()
-	local playerScripts = localPlayer:FindFirstChild("PlayerScripts")
-	if not playerScripts then return false end
-	for _, script in ipairs(playerScripts:GetDescendants()) do
-		if script:IsA("LocalScript") or script:IsA("ModuleScript") then
-			local ok, env = pcall(getsenv, script)
-			if ok and typeof(env) == "table" then
-				for name, value in pairs(env) do
-					if typeof(name) == "string" and typeof(value) == "function"
-						and (name:lower():find("playegg") or name:lower():find("egganim"))
-					then
-						eggHookState.frontend = env
-						eggHookState.path = "scan:" .. script.Name .. "." .. name
-						return true
-					end
-				end
-			end
-		end
-	end
-	return false
-end
-
--- Tìm function hiển thị message dưới màn hình. Không cache nil.
-local function resolveMessageBottom()
-	local function pickBottom(tbl)
-		if typeof(tbl) ~= "table" then return nil, nil end
-		local ok, bottom = pcall(function() return tbl.Bottom end)
-		if ok and typeof(bottom) == "function" then return bottom, tbl end
-		return nil, nil
-	end
-
-	local env = eggHookState.frontend
-	if env then
-		local okMsg, msg = pcall(function() return env.Message end)
-		if okMsg then
-			local bottom, owner = pickBottom(msg)
-			if bottom then return bottom, owner end
-		end
-		for _, value in pairs(env) do
-			if typeof(value) == "table" then
-				local bottom, owner = pickBottom(value)
-				if bottom then return bottom, owner end
-			end
-		end
-	end
-
-	local okScripts, scripts = pcall(getrunningscripts)
-	if okScripts and typeof(scripts) == "table" then
-		for _, script in ipairs(scripts) do
-			local okEnv, senv = pcall(getsenv, script)
-			if okEnv and typeof(senv) == "table" then
-				local okMsg, msg = pcall(function() return senv.Message end)
-				if okMsg then
-					local bottom, owner = pickBottom(msg)
-					if bottom then return bottom, owner end
-				end
-			end
-		end
-	end
-
-	return nil, nil
-end
-
--- Gọi Message.Bottom trên identity 4, thử nhiều dạng tham số.
-local function pushEggMessage(eggName)
-	local prevIdentity = 2
-	pcall(function() prevIdentity = getthreadidentity() end)
-	pcall(setthreadidentity, 4)
-
-	local ok, err = pcall(function()
-		local maxHatch = getMaxHatch()
-		local color = Color3.fromRGB(math.random(0, 255), math.random(0, 255), math.random(0, 255))
-		local text = "Still Openin " .. tostring(eggName) .. " " .. tostring(maxHatch)
-		local payload = { Message = text, Color = color }
-
-		local bottom = eggHookState.messageFn
-		local owner = eggHookState.messageOwner
-		if not bottom then
-			bottom, owner = resolveMessageBottom()
-			eggHookState.messageFn = bottom
-			eggHookState.messageOwner = owner
-		end
-		if not bottom then
-			error("Message.Bottom not found")
-		end
-
-		local okCall, callErr = pcall(bottom, payload)
-		if not okCall and owner then
-			okCall, callErr = pcall(bottom, owner, payload)
-		end
-		if not okCall then
-			okCall, callErr = pcall(bottom, text, color)
-		end
-		if not okCall then
-			eggHookState.messageFn = nil
-			eggHookState.messageOwner = nil
-			error(tostring(callErr))
-		end
-	end)
-
-	pcall(setthreadidentity, prevIdentity)
-	eggHookState.lastError = ok and nil or tostring(err)
-	return ok
-end
-
 local function applyEggHook()
 	local env = eggHookState.frontend
 	if not env then
-		if not findEggFrontend() then scanForPlayEgg() end
+		if not findEggFrontend() then return false end
 		env = eggHookState.frontend
 		if not env then return false end
 	end
@@ -857,16 +793,6 @@ local function applyEggHook()
 			if typeof(env[name]) == "function" then
 				funcName = name
 				break
-			end
-		end
-		if not funcName then
-			for name, value in pairs(env) do
-				if typeof(name) == "string" and typeof(value) == "function"
-					and (name:lower():find("playegg") or name:lower():find("egganim"))
-				then
-					funcName = name
-					break
-				end
 			end
 		end
 	end
@@ -892,14 +818,9 @@ local function applyEggHook()
 	end
 
 	local target = env[funcName]
-	if target == eggHookState.hook then
-		return true
-	end
-	if eggHookState.hookedTargets[target] then
-		return true
-	end
+	if target == eggHookState.hook then return true end
+	if eggHookState.hookedTargets[target] then return true end
 
-	-- 1) hookfunction: bắt cả call qua local/upvalue
 	eggHookState.hookedTargets[target] = true
 	local ok, restored = pcall(hookfunction, target, newcclosure(eggHookState.hook))
 	if not ok then
@@ -909,24 +830,19 @@ local function applyEggHook()
 		if not eggHookState.callOriginal then
 			eggHookState.callOriginal = restored
 		end
-		eggHookState.lastVia = "hookfunction"
 		return true
 	end
 
-	-- 2) fallback: gán lại env field
 	eggHookState.hookedTargets[target] = nil
 	if not eggHookState.callOriginal then
 		eggHookState.callOriginal = target
 	end
 	pcall(function() env[funcName] = eggHookState.hook end)
-	eggHookState.lastVia = "env"
 	return true
 end
 
 local function installEggHook()
-	if not eggHookState.frontend then
-		if not findEggFrontend() then scanForPlayEgg() end
-	end
+	if not eggHookState.frontend then findEggFrontend() end
 	return applyEggHook()
 end
 
@@ -945,35 +861,10 @@ local function startEggHookLoop()
 	end)
 end
 
-getgenv().VRT_EggDebug = function()
-	print("[VRT Egg] path:", tostring(eggHookState.path))
-	print("[VRT Egg] funcName:", tostring(eggHookState.funcName))
-	print("[VRT Egg] via:", tostring(eggHookState.lastVia))
-	print("[VRT Egg] lastError:", tostring(eggHookState.lastError))
-	local env = eggHookState.frontend
-	if env then
-		print("[VRT Egg] PlayEggAnimation:", typeof(env.PlayEggAnimation))
-		local okMsg, msg = pcall(function() return env.Message end)
-		print("[VRT Egg] Message:", okMsg and typeof(msg) or ("error: " .. tostring(msg)))
-		if okMsg and typeof(msg) == "table" then
-			local okB, bottom = pcall(function() return msg.Bottom end)
-			print("[VRT Egg] Message.Bottom:", okB and typeof(bottom) or ("error: " .. tostring(bottom)))
-		end
-	end
-	local bottom = resolveMessageBottom()
-	print("[VRT Egg] resolved Bottom:", typeof(bottom))
-end
-
-getgenv().VRT_EggTest = function()
-	local ok = pushEggMessage("Test")
-	print("[VRT Egg] test message:", ok and "OK" or ("FAIL: " .. tostring(eggHookState.lastError)))
-	return ok
-end
-
 task.spawn(function()
 	for _ = 1, 10 do
 		if eggHookState.frontend then break end
-		if not findEggFrontend() then scanForPlayEgg() end
+		findEggFrontend()
 		task.wait(1)
 	end
 	startEggHookLoop()
@@ -4976,17 +4867,6 @@ if tabs.eggs then
 			settings.HookEggAnimation = value
 			queueSave()
 			pcall(installEggHook)
-			if value then
-				task.delay(0.5, function()
-					if not eggHookState.lastVia then
-						rayfield:Notify({
-							Title = "Egg Hook",
-							Content = "Chưa hook được. Bấm Debug Egg Hook để xem chi tiết.",
-							Duration = 6,
-						})
-					end
-				end)
-			end
 		end,
 	})
 	tabs.eggs:CreateToggle({
@@ -5049,24 +4929,6 @@ if tabs.eggs then
 			clearDirectoryCache()
 			refreshAllDropdowns()
 			rayfield:Notify({ Title = "VRT", Content = "Đã refresh dropdowns", Duration = 3 })
-		end,
-	})
-	tabs.eggs:CreateButton({
-		Name = "Debug Egg Hook (in ra console)",
-		Callback = function()
-			pcall(getgenv().VRT_EggDebug)
-			rayfield:Notify({ Title = "Egg Hook", Content = "Đã in debug ra console (F9).", Duration = 4 })
-		end,
-	})
-	tabs.eggs:CreateButton({
-		Name = "Test Egg Message (thử hiện text)",
-		Callback = function()
-			local ok = getgenv().VRT_EggTest and getgenv().VRT_EggTest()
-			rayfield:Notify({
-				Title = "Egg Hook",
-				Content = ok and "Đã gửi test message." or ("Thất bại: " .. tostring(eggHookState.lastError)),
-				Duration = 6,
-			})
 		end,
 	})
 end
@@ -5561,8 +5423,6 @@ if tabs.secret then
 			merchantState.lastVisit = nil
 			merchantState.attempted = false
 			expeditionState.lastClaimAt = 0
-			eggHookState.messageFn = nil
-			eggHookState.messageOwner = nil
 			rayfield:Notify({ Title = "VRT", Content = "Đã xoá tất cả cache", Duration = 3 })
 		end,
 	})
@@ -5756,8 +5616,11 @@ getgenv().VRT_Unload = function()
 	eggHookState.hook = nil
 	eggHookState.callOriginal = nil
 	eggHookState.thread = nil
-	eggHookState.messageFn = nil
-	eggHookState.messageOwner = nil
+	if eggMsgGui then
+		pcall(function() eggMsgGui:Destroy() end)
+		eggMsgGui = nil
+		eggMsgLabel = nil
+	end
 
 	pcall(saveConfig)
 	pcall(function() rayfield:Destroy() end)
