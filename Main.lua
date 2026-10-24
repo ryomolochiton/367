@@ -1,8 +1,6 @@
 -- =====================================================
--- VRT HUB — PET SIMULATOR 99 v2.0.0
--- Bỏ hết button "once/now", chỉ giữ toggle
--- Flag: chỉ dùng khi trong zone, không teleport
--- Egg hook: TextLabel custom, stack neo đáy, font khớp game
+-- VRT HUB — PET SIMULATOR 99 v2.1.0
+-- Egg hook: native Message.Bottom (giống obf), fallback TextLabel
 -- =====================================================
 
 if getgenv().VRT_LOADED then
@@ -203,7 +201,7 @@ end
 -- -----------------------------------------------------
 local vrt = getgenv().VRT or {}
 getgenv().VRT = vrt
-vrt.Version = "2.0.0"
+vrt.Version = "2.1.0"
 vrt.connections = {}
 vrt.loops = {}
 vrt.fruitLog = {}
@@ -661,7 +659,7 @@ local function sendExecutionWebhook()
 end
 
 -- -----------------------------------------------------
--- Hide Egg Anim (RenderStepped — max frequency)
+-- Hide Egg Anim (RenderStepped)
 -- -----------------------------------------------------
 vrt.eggGuiConnections = {}
 
@@ -687,14 +685,14 @@ runService.RenderStepped:Connect(function()
 	if not settings.HideEggAnim then return end
 	local playerGui = localPlayer:FindFirstChild("PlayerGui")
 	if not playerGui then return end
-	local target = playerGui:FindFirstChild("EggOpenAnimation")
+	local target = playerGui:FindFirstChild("EggOpeningAnimation") or playerGui:FindFirstChild("EggOpenAnimation")
 	if target and target:IsA("ScreenGui") and target.Enabled then
 		target.Enabled = false
 	end
 end)
 
 -- -----------------------------------------------------
--- EGG ANIMATION HOOK (stack neo đáy, font khớp game)
+-- EGG ANIMATION HOOK (native Message.Bottom, giống obf)
 -- -----------------------------------------------------
 local eggHookState = {
 	frontend = nil,
@@ -705,15 +703,17 @@ local eggHookState = {
 	callOriginal = nil,
 	hookedTargets = setmetatable({}, { __mode = "k" }),
 	thread = nil,
+	messageTable = nil,
 }
 
+-- Fallback TextLabel (dùng khi không tìm được Message.Bottom)
 local eggMsgGui = nil
 local eggMsgContainer = nil
 local eggMsgList = {}
 
 local EGG_MSG_MAX = 5
-local EGG_MSG_HEIGHT = 44
-local EGG_MSG_BOTTOM_OFFSET = 130
+local EGG_MSG_HEIGHT = 34
+local EGG_MSG_ANCHOR_Y = 0.72
 
 local function cleanupStaleEggGuis()
 	local playerGui = localPlayer:FindFirstChild("PlayerGui")
@@ -725,7 +725,6 @@ local function cleanupStaleEggGuis()
 	end
 end
 
--- Newest ở đáy stack, cũ bị đẩy lên trên.
 local function relayoutEggMessages()
 	local n = #eggMsgList
 	for i, entry in ipairs(eggMsgList) do
@@ -745,8 +744,8 @@ local function createEggMsgLabel()
 	label.Size = UDim2.new(0, 900, 0, EGG_MSG_HEIGHT)
 	label.BackgroundTransparency = 1
 	label.BorderSizePixel = 0
-	label.Font = Enum.Font.GothamBlack
-	label.TextSize = 32
+	label.Font = Enum.Font.FredokaOne
+	label.TextSize = 24
 	label.TextScaled = false
 	label.TextWrapped = false
 	label.TextXAlignment = Enum.TextXAlignment.Center
@@ -795,7 +794,7 @@ local function ensureEggMsgGui()
 	eggMsgContainer = Instance.new("Frame")
 	eggMsgContainer.Name = "Container"
 	eggMsgContainer.AnchorPoint = Vector2.new(0.5, 1)
-	eggMsgContainer.Position = UDim2.new(0.5, 0, 1, -EGG_MSG_BOTTOM_OFFSET)
+	eggMsgContainer.Position = UDim2.new(0.5, 0, EGG_MSG_ANCHOR_Y, 0)
 	eggMsgContainer.Size = UDim2.new(0, 900, 0, EGG_MSG_HEIGHT * EGG_MSG_MAX)
 	eggMsgContainer.BackgroundTransparency = 1
 	eggMsgContainer.BorderSizePixel = 0
@@ -803,7 +802,7 @@ local function ensureEggMsgGui()
 	eggMsgContainer.Parent = eggMsgGui
 end
 
-local function pushEggMessage(eggName)
+local function pushEggMessageFallback(eggName)
 	pcall(function()
 		ensureEggMsgGui()
 		if not eggMsgContainer then return end
@@ -853,6 +852,51 @@ local function pushEggMessage(eggName)
 			end)
 		end)
 	end)
+end
+
+-- Tìm bảng {Top=fn, Bottom=fn} trong GC (Message module của game).
+local function findMessageTable()
+	local ok, gc = pcall(getgc, true)
+	if not ok or typeof(gc) ~= "table" then return nil end
+	local i = 0
+	for _, obj in ipairs(gc) do
+		i += 1
+		if i % 3000 == 0 then task.wait() end
+		if typeof(obj) == "table" then
+			local okB, bottom = pcall(function() return obj.Bottom end)
+			local okT, top = pcall(function() return obj.Top end)
+			if okB and typeof(bottom) == "function" and okT and typeof(top) == "function" then
+				return obj
+			end
+		end
+	end
+	return nil
+end
+
+-- Gọi Message.Bottom native — giống hệt obf.
+local function pushEggMessageNative(eggName)
+	local msg = eggHookState.messageTable
+	if not msg then
+		msg = findMessageTable()
+		eggHookState.messageTable = msg
+	end
+	if not msg then
+		pushEggMessageFallback(eggName)
+		return
+	end
+
+	local ok = pcall(function()
+		local maxHatch = getMaxHatch()
+		local color = Color3.fromRGB(math.random(0, 255), math.random(0, 255), math.random(0, 255))
+		msg.Bottom({
+			Message = "Still Openin " .. tostring(eggName) .. " " .. tostring(maxHatch),
+			Color = color,
+		})
+	end)
+	if not ok then
+		eggHookState.messageTable = nil
+		pushEggMessageFallback(eggName)
+	end
 end
 
 local function destroyEggMsgGui()
@@ -961,7 +1005,7 @@ local function applyEggHook()
 		local hook = function(eggName, ...)
 			if settings.HideEggAnim then pcall(hideEggGuis) end
 			if settings.HookEggAnimation then
-				pushEggMessage(eggName)
+				pushEggMessageNative(eggName)
 				return
 			end
 			local call = eggHookState.callOriginal
@@ -1027,6 +1071,7 @@ localPlayer.CharacterAdded:Connect(function()
 		eggHookState.frontend = nil
 		eggHookState.script = nil
 		eggHookState.funcName = nil
+		eggHookState.messageTable = nil
 		if settings.HookEggAnimation or settings.HideEggAnim then
 			pcall(installEggHook)
 		end
@@ -5033,7 +5078,7 @@ if tabs.eggs then
 		end,
 	})
 	tabs.eggs:CreateToggle({
-		Name = "Hook Egg Animation (TextLabel custom, no anim)",
+		Name = "Hook Egg Animation (native Message.Bottom)",
 		CurrentValue = settings.HookEggAnimation or false, Flag = "HookEggAnimation",
 		Callback = function(value)
 			settings.HookEggAnimation = value
@@ -5595,6 +5640,7 @@ if tabs.secret then
 			merchantState.lastVisit = nil
 			merchantState.attempted = false
 			expeditionState.lastClaimAt = 0
+			eggHookState.messageTable = nil
 			rayfield:Notify({ Title = "VRT", Content = "Đã xoá tất cả cache", Duration = 3 })
 		end,
 	})
@@ -5789,6 +5835,7 @@ getgenv().VRT_Unload = function()
 	eggHookState.callOriginal = nil
 	eggHookState.thread = nil
 	eggHookState.script = nil
+	eggHookState.messageTable = nil
 	destroyEggMsgGui()
 
 	pcall(saveConfig)
