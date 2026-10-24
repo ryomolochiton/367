@@ -1,8 +1,8 @@
 -- =====================================================
--- VRT HUB — PET SIMULATOR 99 v1.9.7
+-- VRT HUB — PET SIMULATOR 99 v1.9.8
 -- Bỏ hết button "once/now", chỉ giữ toggle
 -- Flag: chỉ dùng khi trong zone, không teleport
--- Egg hook: TextLabel tự tạo (không phụ thuộc env.Message/GC)
+-- Egg hook: stacked TextLabel, dòng mới đẩy dòng cũ lên
 -- =====================================================
 
 if getgenv().VRT_LOADED then
@@ -203,7 +203,7 @@ end
 -- -----------------------------------------------------
 local vrt = getgenv().VRT or {}
 getgenv().VRT = vrt
-vrt.Version = "1.9.7"
+vrt.Version = "1.9.8"
 vrt.connections = {}
 vrt.loops = {}
 vrt.fruitLog = {}
@@ -694,7 +694,7 @@ runService.RenderStepped:Connect(function()
 end)
 
 -- -----------------------------------------------------
--- EGG ANIMATION HOOK (custom TextLabel — reliable)
+-- EGG ANIMATION HOOK (stacked messages, newest at bottom)
 -- -----------------------------------------------------
 local eggHookState = {
 	frontend = nil,
@@ -707,52 +707,159 @@ local eggHookState = {
 }
 
 local eggMsgGui = nil
-local eggMsgLabel = nil
+local eggMsgContainer = nil
+local eggMsgList = {}
 
-local function ensureEggMsgGui()
-	if eggMsgGui and eggMsgGui.Parent then return end
+local EGG_MSG_MAX = 6
+local EGG_MSG_HEIGHT = 38
+local EGG_MSG_ANCHOR_Y = 0.62
+
+local function cleanupStaleEggGuis()
 	local playerGui = localPlayer:FindFirstChild("PlayerGui")
 	if not playerGui then return end
+	for _, child in ipairs(playerGui:GetChildren()) do
+		if child.Name == "VRT_EggMsg" then
+			pcall(function() child:Destroy() end)
+		end
+	end
+end
+
+-- Message mới nhất nằm ở dưới cùng, cũ bị đẩy lên trên.
+local function relayoutEggMessages()
+	local n = #eggMsgList
+	for i, entry in ipairs(eggMsgList) do
+		local label = entry.label
+		if label and label.Parent then
+			local offset = -(n - i) * EGG_MSG_HEIGHT
+			label.Position = UDim2.new(0.5, 0, 0, offset)
+		end
+	end
+end
+
+local function createEggMsgLabel()
+	local label = Instance.new("TextLabel")
+	label.Name = "Message"
+	label.AnchorPoint = Vector2.new(0.5, 1)
+	label.Position = UDim2.new(0.5, 0, 0, 0)
+	label.Size = UDim2.new(0, 900, 0, EGG_MSG_HEIGHT)
+	label.BackgroundTransparency = 1
+	label.BorderSizePixel = 0
+	label.Font = Enum.Font.GothamBlack
+	label.TextSize = 30
+	label.TextScaled = false
+	label.TextWrapped = false
+	label.TextXAlignment = Enum.TextXAlignment.Center
+	label.TextYAlignment = Enum.TextYAlignment.Center
+	label.TextStrokeTransparency = 0
+	label.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+	label.TextColor3 = Color3.fromRGB(255, 255, 255)
+	label.RichText = false
+	label.Text = ""
+	label.ZIndex = 2
+	label.Parent = eggMsgContainer
+
+	local stroke = Instance.new("UIStroke")
+	stroke.Name = "Outline"
+	stroke.Color = Color3.fromRGB(0, 0, 0)
+	stroke.Thickness = 2
+	stroke.Transparency = 0
+	stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Contextual
+	stroke.Parent = label
+
+	return label, stroke
+end
+
+local function ensureEggMsgGui()
+	local playerGui = localPlayer:FindFirstChild("PlayerGui")
+	if not playerGui then return end
+
+	if eggMsgGui and eggMsgGui.Parent == playerGui
+		and eggMsgContainer and eggMsgContainer.Parent then
+		return
+	end
+
+	cleanupStaleEggGuis()
+	eggMsgGui = nil
+	eggMsgContainer = nil
+	eggMsgList = {}
 
 	eggMsgGui = Instance.new("ScreenGui")
 	eggMsgGui.Name = "VRT_EggMsg"
 	eggMsgGui.ResetOnSpawn = false
 	eggMsgGui.IgnoreGuiInset = true
 	eggMsgGui.DisplayOrder = 999
+	eggMsgGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 	eggMsgGui.Parent = playerGui
 
-	eggMsgLabel = Instance.new("TextLabel")
-	eggMsgLabel.Size = UDim2.new(0, 700, 0, 40)
-	eggMsgLabel.Position = UDim2.new(0.5, -350, 1, -140)
-	eggMsgLabel.BackgroundTransparency = 1
-	eggMsgLabel.Font = Enum.Font.GothamBold
-	eggMsgLabel.TextSize = 26
-	eggMsgLabel.TextStrokeTransparency = 0
-	eggMsgLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-	eggMsgLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-	eggMsgLabel.Text = ""
-	eggMsgLabel.Parent = eggMsgGui
+	eggMsgContainer = Instance.new("Frame")
+	eggMsgContainer.Name = "Container"
+	eggMsgContainer.AnchorPoint = Vector2.new(0.5, 1)
+	eggMsgContainer.Position = UDim2.new(0.5, 0, EGG_MSG_ANCHOR_Y, 0)
+	eggMsgContainer.Size = UDim2.new(0, 900, 0, EGG_MSG_HEIGHT * EGG_MSG_MAX)
+	eggMsgContainer.BackgroundTransparency = 1
+	eggMsgContainer.BorderSizePixel = 0
+	eggMsgContainer.Parent = eggMsgGui
 end
 
 local function pushEggMessage(eggName)
 	pcall(function()
 		ensureEggMsgGui()
-		if not eggMsgLabel then return end
+		if not eggMsgContainer then return end
+
 		local maxHatch = getMaxHatch()
 		local color = Color3.fromRGB(math.random(0, 255), math.random(0, 255), math.random(0, 255))
-		eggMsgLabel.Text = "Still Openin " .. tostring(eggName) .. " " .. tostring(maxHatch)
-		eggMsgLabel.TextColor3 = color
-		eggMsgLabel.TextTransparency = 0
-		eggMsgLabel.TextStrokeTransparency = 0
+
+		while #eggMsgList >= EGG_MSG_MAX do
+			local oldest = table.remove(eggMsgList, 1)
+			if oldest and oldest.label then
+				pcall(function() oldest.label:Destroy() end)
+			end
+		end
+
+		local label, stroke = createEggMsgLabel()
+		label.Text = "Still Openin " .. tostring(eggName) .. " " .. tostring(maxHatch)
+		label.TextColor3 = color
+		label.TextTransparency = 0
+		label.TextStrokeTransparency = 0
+
+		local entry = { label = label, stroke = stroke }
+		table.insert(eggMsgList, entry)
+		relayoutEggMessages()
+
 		task.delay(3, function()
-			if eggMsgLabel then
-				tweenService:Create(eggMsgLabel, TweenInfo.new(0.5), {
+			local idx = table.find(eggMsgList, entry)
+			if not idx then return end
+
+			local info = TweenInfo.new(0.5)
+			if label and label.Parent then
+				tweenService:Create(label, info, {
 					TextTransparency = 1,
 					TextStrokeTransparency = 1,
 				}):Play()
 			end
+			if stroke and stroke.Parent then
+				tweenService:Create(stroke, info, { Transparency = 1 }):Play()
+			end
+
+			task.delay(0.55, function()
+				local i2 = table.find(eggMsgList, entry)
+				if i2 then
+					table.remove(eggMsgList, i2)
+				end
+				if label then pcall(function() label:Destroy() end) end
+				relayoutEggMessages()
+			end)
 		end)
 	end)
+end
+
+local function destroyEggMsgGui()
+	if eggMsgGui then
+		pcall(function() eggMsgGui:Destroy() end)
+	end
+	eggMsgGui = nil
+	eggMsgContainer = nil
+	eggMsgList = {}
 end
 
 local function findEggFrontend()
@@ -5616,11 +5723,7 @@ getgenv().VRT_Unload = function()
 	eggHookState.hook = nil
 	eggHookState.callOriginal = nil
 	eggHookState.thread = nil
-	if eggMsgGui then
-		pcall(function() eggMsgGui:Destroy() end)
-		eggMsgGui = nil
-		eggMsgLabel = nil
-	end
+	destroyEggMsgGui()
 
 	pcall(saveConfig)
 	pcall(function() rayfield:Destroy() end)
