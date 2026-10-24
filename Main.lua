@@ -750,10 +750,26 @@ if not findEggFrontend() then
 	scanForPlayEgg()
 end
 
+-- Tìm hàm hiển thị TextLabel (Message.Bottom) trong env frontend.
+local function resolveMessageFn()
+	if not eggFrontend then return nil end
+	local msg = eggFrontend.Message
+	if typeof(msg) == "table" and typeof(msg.Bottom) == "function" then
+		return msg.Bottom
+	end
+	for _, value in pairs(eggFrontend) do
+		if typeof(value) == "table" and typeof(value.Bottom) == "function" then
+			return value.Bottom
+		end
+	end
+	return nil
+end
+
 local function installEggHook()
 	if not eggFrontend then return end
-	local funcName = "PlayEggAnimation"
+	local funcName = getgenv().VRT_ORIGINAL_PLAY_EGG_NAME or "PlayEggAnimation"
 	if typeof(eggFrontend[funcName]) ~= "function" then
+		funcName = nil
 		for _, name in ipairs({ "PlayEggAnimation", "PlayAnimation", "PlayEgg", "PlayHatch" }) do
 			if typeof(eggFrontend[name]) == "function" then
 				funcName = name
@@ -761,31 +777,19 @@ local function installEggHook()
 			end
 		end
 	end
-	if typeof(eggFrontend[funcName]) ~= "function" then return end
+	if not funcName then return end
 
-	if getgenv().VRT_ORIGINAL_PLAY_EGG then
-		pcall(function()
-			eggFrontend[funcName] = getgenv().VRT_ORIGINAL_PLAY_EGG
-		end)
-	else
+	-- Lưu bản gốc đúng 1 lần.
+	if not getgenv().VRT_ORIGINAL_PLAY_EGG then
 		getgenv().VRT_ORIGINAL_PLAY_EGG = eggFrontend[funcName]
 		getgenv().VRT_ORIGINAL_PLAY_EGG_NAME = funcName
 	end
 	local originalPlayEgg = getgenv().VRT_ORIGINAL_PLAY_EGG
 	vrt.originalPlayEgg = originalPlayEgg
 
-	local hook
-	if settings.HookEggAnimation then
-		hook = function(a)
-			local maxHatch = getMaxHatch()
-			local color = Color3.fromRGB(math.random(0, 255), math.random(0, 255), math.random(0, 255))
-			if eggFrontend.Message and eggFrontend.Message.Bottom then
-				eggFrontend.Message.Bottom({ Message = "Still Openin " .. tostring(a) .. " " .. maxHatch, Color = color })
-			end
-			return
-		end
-	else
-		hook = function(eggName, ...)
+	-- Toggle off: trả animation gốc (vẫn tôn trọng HideEggAnim).
+	if not settings.HookEggAnimation then
+		eggFrontend[funcName] = function(eggName, ...)
 			if settings.HideEggAnim then
 				pcall(hideEggGuis)
 			end
@@ -793,10 +797,22 @@ local function installEggHook()
 			if ok then return result end
 			return
 		end
+		return
 	end
-	pcall(setstackhidden, hook, true)
-	pcall(debug.setinfo, hook, "s", "[C]")
-	eggFrontend[funcName] = hook
+
+	-- Toggle on: thay animation bằng TextLabel qua Message.Bottom.
+	local messageFn = resolveMessageFn()
+	eggFrontend[funcName] = function(a, ...)
+		pcall(function()
+			local maxHatch = getMaxHatch()
+			local color = Color3.fromRGB(math.random(0, 255), math.random(0, 255), math.random(0, 255))
+			local fn = messageFn or resolveMessageFn()
+			if fn then
+				fn({ Message = "Still Openin " .. tostring(a) .. " " .. tostring(maxHatch), Color = color })
+			end
+		end)
+		return
+	end
 end
 
 task.spawn(function()
@@ -3189,6 +3205,11 @@ local EVENT_PETS_MANUAL = {
 	-- ["Tên Pet"] = true,
 }
 
+-- Số pet tối thiểu máy Fuse chấp nhận 1 lần ép.
+local FUSE_MIN = 3
+
+-- Chỉ CHẶN khi chắc chắn là pet event. Config thiếu/không rõ => CHO PHÉP,
+-- tránh filter nuốt sạch pet khiến fuse không bao giờ chạy.
 local function isEventPet(entry)
 	if typeof(entry) ~= "table" then return false end
 	local id = entry.id
@@ -3196,8 +3217,10 @@ local function isEventPet(entry)
 	if EVENT_PETS_MANUAL[id] then return true end
 	local cfg = Modules.PetsDir and Modules.PetsDir[id]
 	if typeof(cfg) ~= "table" then return false end
-	-- Pet thường nở từ egg (có fromEgg). Pet event/đặc biệt KHÔNG => chặn.
-	return cfg.fromEgg == nil
+	if cfg.fromEgg == false or cfg.isEvent == true or cfg.event == true then
+		return true
+	end
+	return false
 end
 
 Core.FusePets = function()
@@ -3223,9 +3246,12 @@ Core.FusePets = function()
 	end
 	local amount = tonumber(settings.FuseAmount) or 5
 	if amount < 1 then amount = 1 end
-	if #uids < amount then return end
+	-- Ép theo số pet có sẵn: đủ `amount` thì ép `amount`, ít hơn nhưng >= FUSE_MIN
+	-- thì ép hết. Trước đây bail khi < amount nên lâu lâu không chạy.
+	local count = math.min(#uids, amount)
+	if count < FUSE_MIN then return end
 	local payload = {}
-	for i = 1, math.min(#uids, amount) do
+	for i = 1, count do
 		payload[uids[i]] = 1
 	end
 	invoke("FuseMachine_Activate", payload)
