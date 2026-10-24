@@ -3200,27 +3200,49 @@ Core.CombineCards = function()
 	invalidateSaveCache()
 end
 
--- === Blacklist pet EVENT cho Auto Fuse (pet không nở từ egg => không fuse được) ===
+-- === Chỉ fuse pet NỞ TỪ EGG (fromEgg ~= nil). Pet fromEgg=nil => chặn. ===
 local EVENT_PETS_MANUAL = {
-	-- ["Tên Pet"] = true,
+	-- ["Tên Pet"] = true,  -- chặn tay thêm nếu cần
 }
 
 -- Số pet tối thiểu máy Fuse chấp nhận 1 lần ép.
 local FUSE_MIN = 3
 
--- Chỉ CHẶN khi chắc chắn là pet event. Config thiếu/không rõ => CHO PHÉP,
--- tránh filter nuốt sạch pet khiến fuse không bao giờ chạy.
-local function isEventPet(entry)
+-- Lấy config pet theo id, thử nhiều đường để tránh trượt key.
+local function getPetConfig(id, instance)
+	local dir = Modules.PetsDir
+	if typeof(dir) == "table" then
+		local cfg = dir[id]
+		if typeof(cfg) == "table" then return cfg end
+		-- Một số bản key lồng trong dir.Pets.
+		if typeof(dir.Pets) == "table" and typeof(dir.Pets[id]) == "table" then
+			return dir.Pets[id]
+		end
+	end
+	-- Thử lấy thẳng từ instance (item object) nếu có config đính kèm.
+	if typeof(instance) == "table" then
+		if typeof(instance._config) == "table" then return instance._config end
+		if typeof(instance._data) == "table" then return instance._data end
+		if typeof(instance.GetConfig) == "function" then
+			local ok, cfg = pcall(instance.GetConfig, instance)
+			if ok and typeof(cfg) == "table" then return cfg end
+		end
+	end
+	return nil
+end
+
+-- Pet được phép fuse khi: không nằm blacklist tay VÀ config resolve được
+-- fromEgg KHÁC nil (tức pet nở ra từ một quả trứng).
+local function isFusablePet(entry, instance)
 	if typeof(entry) ~= "table" then return false end
 	local id = entry.id
 	if typeof(id) ~= "string" then return false end
-	if EVENT_PETS_MANUAL[id] then return true end
-	local cfg = Modules.PetsDir and Modules.PetsDir[id]
-	if typeof(cfg) ~= "table" then return false end
-	if cfg.fromEgg == false or cfg.isEvent == true or cfg.event == true then
-		return true
-	end
-	return false
+	if EVENT_PETS_MANUAL[id] then return false end
+	local cfg = getPetConfig(id, instance)
+	if typeof(cfg) ~= "table" then return false end   -- không rõ => chặn
+	-- Chặn tất cả pet không mở từ egg.
+	if cfg.fromEgg == nil then return false end
+	return true
 end
 
 Core.FusePets = function()
@@ -3232,15 +3254,10 @@ Core.FusePets = function()
 	if not items or not items.Pet or not items.Pet.From then return end
 	local uids = {}
 	for uid, entry in pairs(save.Inventory.Pet) do
-		if typeof(entry) == "table" and not isEventPet(entry) then   -- << chặn pet event
+		if typeof(entry) == "table" then
 			local ok, instance = pcall(items.Pet.From, items.Pet, entry)
-			if ok and instance then
-				local isRainbow = instance.IsRainbow and instance:IsRainbow()
-				local isGolden = instance.IsGolden and instance:IsGolden()
-				local isShiny = instance.IsShiny and instance:IsShiny()
-				if isRainbow or isGolden or isShiny then
-					table.insert(uids, uid)
-				end
+			if ok and instance and isFusablePet(entry, instance) then   -- << pet from egg (gồm cả normal)
+				table.insert(uids, uid)
 			end
 		end
 	end
