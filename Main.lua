@@ -1,8 +1,8 @@
 -- =====================================================
--- VRT HUB — PET SIMULATOR 99 v1.9.9
+-- VRT HUB — PET SIMULATOR 99 v2.0.0
 -- Bỏ hết button "once/now", chỉ giữ toggle
 -- Flag: chỉ dùng khi trong zone, không teleport
--- Egg hook: re-find frontend khi đổi world, label neo đúng chỗ
+-- Egg hook: TextLabel custom, stack neo đáy, font khớp game
 -- =====================================================
 
 if getgenv().VRT_LOADED then
@@ -203,7 +203,7 @@ end
 -- -----------------------------------------------------
 local vrt = getgenv().VRT or {}
 getgenv().VRT = vrt
-vrt.Version = "1.9.9"
+vrt.Version = "2.0.0"
 vrt.connections = {}
 vrt.loops = {}
 vrt.fruitLog = {}
@@ -694,7 +694,7 @@ runService.RenderStepped:Connect(function()
 end)
 
 -- -----------------------------------------------------
--- EGG ANIMATION HOOK (re-find frontend khi đổi world)
+-- EGG ANIMATION HOOK (stack neo đáy, font khớp game)
 -- -----------------------------------------------------
 local eggHookState = {
 	frontend = nil,
@@ -711,9 +711,9 @@ local eggMsgGui = nil
 local eggMsgContainer = nil
 local eggMsgList = {}
 
-local EGG_MSG_MAX = 6
-local EGG_MSG_HEIGHT = 38
-local EGG_MSG_ANCHOR_Y = 0.62
+local EGG_MSG_MAX = 5
+local EGG_MSG_HEIGHT = 44
+local EGG_MSG_BOTTOM_OFFSET = 130
 
 local function cleanupStaleEggGuis()
 	local playerGui = localPlayer:FindFirstChild("PlayerGui")
@@ -725,7 +725,7 @@ local function cleanupStaleEggGuis()
 	end
 end
 
--- Message mới nhất ở đáy container, cũ bị đẩy lên trên.
+-- Newest ở đáy stack, cũ bị đẩy lên trên.
 local function relayoutEggMessages()
 	local n = #eggMsgList
 	for i, entry in ipairs(eggMsgList) do
@@ -746,7 +746,7 @@ local function createEggMsgLabel()
 	label.BackgroundTransparency = 1
 	label.BorderSizePixel = 0
 	label.Font = Enum.Font.GothamBlack
-	label.TextSize = 30
+	label.TextSize = 32
 	label.TextScaled = false
 	label.TextWrapped = false
 	label.TextXAlignment = Enum.TextXAlignment.Center
@@ -762,7 +762,7 @@ local function createEggMsgLabel()
 	local stroke = Instance.new("UIStroke")
 	stroke.Name = "Outline"
 	stroke.Color = Color3.fromRGB(0, 0, 0)
-	stroke.Thickness = 2
+	stroke.Thickness = 3
 	stroke.Transparency = 0
 	stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Contextual
 	stroke.Parent = label
@@ -795,7 +795,7 @@ local function ensureEggMsgGui()
 	eggMsgContainer = Instance.new("Frame")
 	eggMsgContainer.Name = "Container"
 	eggMsgContainer.AnchorPoint = Vector2.new(0.5, 1)
-	eggMsgContainer.Position = UDim2.new(0.5, 0, EGG_MSG_ANCHOR_Y, 0)
+	eggMsgContainer.Position = UDim2.new(0.5, 0, 1, -EGG_MSG_BOTTOM_OFFSET)
 	eggMsgContainer.Size = UDim2.new(0, 900, 0, EGG_MSG_HEIGHT * EGG_MSG_MAX)
 	eggMsgContainer.BackgroundTransparency = 1
 	eggMsgContainer.BorderSizePixel = 0
@@ -913,7 +913,6 @@ local function scanForFrontend()
 end
 
 local function applyEggHook()
-	-- Script instance bị destroy (đổi world) → re-find.
 	if not eggHookState.script or not eggHookState.script.Parent then
 		eggHookState.frontend = nil
 		eggHookState.script = nil
@@ -926,7 +925,6 @@ local function applyEggHook()
 		end
 	end
 
-	-- Re-getsenv để phát hiện env mới (script re-run).
 	local okEnv, freshEnv = pcall(getsenv, eggHookState.script)
 	if okEnv and typeof(freshEnv) == "table" and freshEnv ~= eggHookState.frontend then
 		eggHookState.frontend = freshEnv
@@ -1023,7 +1021,6 @@ local function startEggHookLoop()
 	end)
 end
 
--- Reset hook state khi character respawn (đổi world / rebirth).
 localPlayer.CharacterAdded:Connect(function()
 	task.defer(function()
 		task.wait(1)
