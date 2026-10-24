@@ -1,7 +1,8 @@
 -- =====================================================
--- VRT HUB — PET SIMULATOR 99 v1.9.3
+-- VRT HUB — PET SIMULATOR 99 v1.9.4
 -- Bỏ hết button "once/now", chỉ giữ toggle
 -- Flag: chỉ dùng khi trong zone, không teleport
+-- Fix: Hook Egg Animation hiện text (persistent + identity 4)
 -- =====================================================
 
 if getgenv().VRT_LOADED then
@@ -202,7 +203,7 @@ end
 -- -----------------------------------------------------
 local vrt = getgenv().VRT or {}
 getgenv().VRT = vrt
-vrt.Version = "1.9.3"
+vrt.Version = "1.9.4"
 vrt.connections = {}
 vrt.loops = {}
 vrt.fruitLog = {}
@@ -419,7 +420,6 @@ local function cleanupTreehouseModels()
 		end
 	end
 end
-
 
 -- -----------------------------------------------------
 -- SAVE CACHE + INVENTORY INDEX
@@ -694,10 +694,12 @@ runService.RenderStepped:Connect(function()
 end)
 
 -- -----------------------------------------------------
--- Egg animation hook
+-- Egg animation hook (persistent — game ghi đè env mỗi world)
 -- -----------------------------------------------------
 local eggFrontend = nil
 local eggFrontendPath = nil
+local eggHookThread = nil
+vrt.eggHookFn = nil
 
 local function findEggFrontend()
 	local paths = {
@@ -746,29 +748,54 @@ local function scanForPlayEgg()
 	return false
 end
 
-if not findEggFrontend() then
-	scanForPlayEgg()
-end
-
--- Tìm hàm hiển thị TextLabel (Message.Bottom) trong env frontend.
+-- Message.Bottom nằm trong env frontend, gọi dạng dot với 1 table.
 local function resolveMessageFn()
-	if not eggFrontend then return nil end
-	local msg = eggFrontend.Message
-	if typeof(msg) == "table" and typeof(msg.Bottom) == "function" then
-		return msg.Bottom
+	if not eggFrontend then return nil, nil end
+	local msg = rawget(eggFrontend, "Message")
+	if typeof(msg) ~= "table" then
+		local ok, value = pcall(function() return eggFrontend.Message end)
+		msg = ok and value or nil
+	end
+	if typeof(msg) == "table" then
+		local bottom = rawget(msg, "Bottom")
+		if typeof(bottom) == "function" then return bottom, msg end
 	end
 	for _, value in pairs(eggFrontend) do
-		if typeof(value) == "table" and typeof(value.Bottom) == "function" then
-			return value.Bottom
+		if typeof(value) == "table" then
+			local bottom = rawget(value, "Bottom")
+			if typeof(bottom) == "function" then return bottom, value end
 		end
 	end
-	return nil
+	return nil, nil
 end
 
-local function installEggHook()
-	if not eggFrontend then return end
-	local funcName = getgenv().VRT_ORIGINAL_PLAY_EGG_NAME or "PlayEggAnimation"
-	if typeof(eggFrontend[funcName]) ~= "function" then
+-- Thay animation full màn hình bằng dòng text nhỏ phía dưới.
+local function pushEggMessage(eggName)
+	local prevIdentity = 4
+	pcall(function() prevIdentity = getthreadidentity() end)
+	pcall(setthreadidentity, 4)
+	local ok = pcall(function()
+		local maxHatch = getMaxHatch()
+		local color = Color3.fromRGB(math.random(0, 255), math.random(0, 255), math.random(0, 255))
+		local fn, owner = resolveMessageFn()
+		if not fn then return end
+		local payload = {
+			Message = "Still Openin " .. tostring(eggName) .. " " .. tostring(maxHatch),
+			Color = color,
+		}
+		if not pcall(fn, payload) and owner then
+			pcall(fn, owner, payload)
+		end
+	end)
+	pcall(setthreadidentity, prevIdentity)
+	return ok
+end
+
+local function applyEggHook()
+	if not eggFrontend then return false end
+
+	local funcName = getgenv().VRT_ORIGINAL_PLAY_EGG_NAME
+	if not funcName or typeof(eggFrontend[funcName]) ~= "function" then
 		funcName = nil
 		for _, name in ipairs({ "PlayEggAnimation", "PlayAnimation", "PlayEgg", "PlayHatch" }) do
 			if typeof(eggFrontend[name]) == "function" then
@@ -777,9 +804,8 @@ local function installEggHook()
 			end
 		end
 	end
-	if not funcName then return end
+	if not funcName then return false end
 
-	-- Lưu bản gốc đúng 1 lần.
 	if not getgenv().VRT_ORIGINAL_PLAY_EGG then
 		getgenv().VRT_ORIGINAL_PLAY_EGG = eggFrontend[funcName]
 		getgenv().VRT_ORIGINAL_PLAY_EGG_NAME = funcName
@@ -787,45 +813,64 @@ local function installEggHook()
 	local originalPlayEgg = getgenv().VRT_ORIGINAL_PLAY_EGG
 	vrt.originalPlayEgg = originalPlayEgg
 
-	-- Toggle off: trả animation gốc (vẫn tôn trọng HideEggAnim).
-	if not settings.HookEggAnimation then
-		eggFrontend[funcName] = function(eggName, ...)
-			if settings.HideEggAnim then
-				pcall(hideEggGuis)
-			end
-			local ok, result = pcall(originalPlayEgg, eggName, ...)
-			if ok then return result end
+	if eggFrontend[funcName] == vrt.eggHookFn then return true end
+
+	local hook = function(eggName, ...)
+		if settings.HideEggAnim then pcall(hideEggGuis) end
+		if settings.HookEggAnimation then
+			pushEggMessage(eggName)
 			return
 		end
-		return
+		return originalPlayEgg(eggName, ...)
 	end
+	pcall(setstackhidden, hook, true)
+	pcall(debug.setinfo, hook, "s", "[C]")
+	pcall(debug.setinfo, hook, "n", "")
+	vrt.eggHookFn = hook
+	eggFrontend[funcName] = hook
+	return true
+end
 
-	-- Toggle on: thay animation bằng TextLabel qua Message.Bottom.
-	local messageFn = resolveMessageFn()
-	eggFrontend[funcName] = function(a, ...)
-		pcall(function()
-			local maxHatch = getMaxHatch()
-			local color = Color3.fromRGB(math.random(0, 255), math.random(0, 255), math.random(0, 255))
-			local fn = messageFn or resolveMessageFn()
-			if fn then
-				fn({ Message = "Still Openin " .. tostring(a) .. " " .. tostring(maxHatch), Color = color })
-			end
-		end)
-		return
+local function installEggHook()
+	if not eggFrontend then
+		if not findEggFrontend() then scanForPlayEgg() end
 	end
+	return applyEggHook()
+end
+
+-- Re-apply liên tục: game reset env field sau mỗi lần load world.
+local function startEggHookLoop()
+	if eggHookThread then return end
+	eggHookThread = task.spawn(function()
+		while getgenv().VRT_LOADED do
+			if settings.HookEggAnimation or settings.HideEggAnim then
+				if not eggFrontend
+					or not eggFrontend[getgenv().VRT_ORIGINAL_PLAY_EGG_NAME or "PlayEggAnimation"]
+				then
+					if not findEggFrontend() then scanForPlayEgg() end
+				end
+				pcall(applyEggHook)
+				task.wait(0.15)
+			else
+				if vrt.eggHookFn and eggFrontend and getgenv().VRT_ORIGINAL_PLAY_EGG then
+					local funcName = getgenv().VRT_ORIGINAL_PLAY_EGG_NAME or "PlayEggAnimation"
+					pcall(function() eggFrontend[funcName] = getgenv().VRT_ORIGINAL_PLAY_EGG end)
+					vrt.eggHookFn = nil
+				end
+				task.wait(0.5)
+			end
+		end
+		eggHookThread = nil
+	end)
 end
 
 task.spawn(function()
 	for _ = 1, 10 do
 		if eggFrontend then break end
-		if not findEggFrontend() then
-			scanForPlayEgg()
-		end
+		if not findEggFrontend() then scanForPlayEgg() end
 		task.wait(1)
 	end
-	if eggFrontend then
-		installEggHook()
-	end
+	startEggHookLoop()
 end)
 
 -- -----------------------------------------------------
@@ -1023,11 +1068,6 @@ local function getChestNames()
 	end)
 end
 
--- Real gift-bag items opened by the "GiftBag_Open" remote.
--- NOTE: not every gift bag has the word "Gift" in its name, and many Misc
--- items that DO contain "Gift" are NOT gift bags (e.g. keys/tokens). So we use
--- an explicit whitelist plus a "... Gift Bag" suffix match, and we only keep
--- entries the player actually owns (getBucketIds already returns owned Misc ids).
 local GIFT_BAG_NAMES = {
 	["Gift Bag"] = true,
 	["Large Gift Bag"] = true,
@@ -1046,7 +1086,6 @@ end
 local function getGiftIds()
 	return memoize("gifts", function()
 		local gifts, seen = {}, {}
-		-- Primary source: __DIRECTORY.MiscItems.Categorized.Gifts (matches obf).
 		local misc = directFolder and directFolder:FindFirstChild("MiscItems")
 		local categorized = misc and misc:FindFirstChild("Categorized")
 		local giftsFolder = categorized and categorized:FindFirstChild("Gifts")
@@ -1066,7 +1105,6 @@ local function getGiftIds()
 				end
 			end
 		end
-		-- Fallback: owned Misc gift bags, in case the directory path is missing.
 		if #gifts == 0 then
 			for _, id in ipairs(getBucketIds("Misc")) do
 				if isGiftBagId(id) and not seen[id] then
@@ -1104,8 +1142,6 @@ end
 
 local function getLootboxIds()
 	return memoize("lootboxes", function()
-		-- Merge every source so the dropdown always matches the current game's
-		-- full lootbox catalog (Directory.Lootboxes) plus anything the player owns.
 		local list, seen = {}, {}
 		local function addAll(src)
 			if typeof(src) ~= "table" then return end
@@ -1497,17 +1533,14 @@ Core.OptimizeBreakables = function()
 	end)
 end
 
--- Loại instance bị triệt hẳn khi AntiLag bật.
 local ANTILAG_KILL = {
 	ParticleEmitter = true, Beam = true, Trail = true, Smoke = true,
 	Fire = true, Sparkles = true, Explosion = true, Sound = true,
 	PointLight = true, SpotLight = true, SurfaceLight = true,
 }
 
--- State của AntiLag: hook instance mới + cache đã xử lý để khỏi quét lại.
 local antiLagState = { conn = nil, seen = setmetatable({}, { __mode = "k" }) }
 
--- Triệt 1 instance tuỳ loại. Trả về true nếu có tác động.
 local function antiLagStrip(descendant)
 	if antiLagState.seen[descendant] then return false end
 	local class = descendant.ClassName
@@ -1535,7 +1568,6 @@ local function antiLagStrip(descendant)
 	return false
 end
 
--- Hạ Lighting + Terrain + FPS cap. Chỉ dùng thứ ăn chắc lúc runtime.
 local function antiLagCrushGraphics()
 	pcall(function()
 		local lighting = game:GetService("Lighting")
@@ -1561,7 +1593,6 @@ local function antiLagCrushGraphics()
 			terrain.Decoration = false
 		end
 	end)
-	-- QualityLevel chỉ ăn nếu executor cho ghi UserSettings.
 	pcall(function()
 		settings().Rendering.QualityLevel = Enum.QualityLevel.Level01
 	end)
@@ -1572,7 +1603,6 @@ end
 
 Core.AntiLag = function()
 	local removed = 0
-	-- Quét các container chính + character người chơi.
 	for _, container in ipairs({ workspace:FindFirstChild("__THINGS"), workspace }) do
 		if container then
 			for _, descendant in ipairs(container:GetDescendants()) do
@@ -1589,7 +1619,6 @@ Core.AntiLag = function()
 		end
 	end
 	antiLagCrushGraphics()
-	-- Hook instance mới sinh ra, khỏi phải quét lại liên tục.
 	if not antiLagState.conn then
 		antiLagState.conn = workspace.DescendantAdded:Connect(function(descendant)
 			if settings.AntiLag then
@@ -1600,7 +1629,6 @@ Core.AntiLag = function()
 	return removed
 end
 
--- Gỡ hook khi tắt AntiLag.
 Core.StopAntiLag = function()
 	if antiLagState.conn then
 		pcall(function() antiLagState.conn:Disconnect() end)
@@ -1822,9 +1850,6 @@ local function checkZoneFlag(anchorPos)
 	local ok, ctx = pcall(flagCmds.SpatialQuery, anchorPos)
 	if not ok or not ctx then return false, nil, nil, nil end
 	local endTime = ctx.EndTime
-	-- Chỉ coi là "đã có cờ" khi EndTime còn hiệu lực thực sự (trong tương lai).
-	-- SpatialQuery vẫn trả ctx của vùng ngay cả khi CHƯA có cờ (EndTime = nil),
-	-- nên nếu return true ở đây thì AutoUseFlag sẽ bail mãi mãi -> cờ không bao giờ tự dùng.
 	if typeof(endTime) == "number" and endTime > os.time() then
 		return true, ctx.FlagId, endTime, ctx
 	end
@@ -1850,11 +1875,6 @@ local function tryConsumeFlagWithCtx(flagId, amount, ctx, pos)
 		return success
 	end
 
-	-- ✅ SIGNATURE THẬT (bắt được từ FlagSniffer lúc đặt cờ tay):
-	--   FlexibleFlagCmds.Consume(displayName, UID, amount)
-	--     -> InvokeServer("FlexibleFlags_Consume", "Coins Flag", <uid>, <amount>)
-	--   arg2 LÀ UID của item cờ trong inventory (string hex 32 ký tự),
-	--   KHÔNG phải position/ctx như code cũ truyền -> nên server bỏ qua.
 	local flagUid = findInventoryUid(flagId) or findInventoryUid(settings.SelectedFlag)
 	if flagUid then
 		if typeof(flagCmds) == "table" and typeof(flagCmds.Consume) == "function" then
@@ -1873,8 +1893,6 @@ local function tryConsumeFlagWithCtx(flagId, amount, ctx, pos)
 		end
 	end
 
-	-- Directory ZoneFlags được key bằng TÊN HIỂN THỊ ("Coins Flag"), KHÔNG phải id inventory.
-	-- Resolve flagDir theo nhiều kiểu để không bị trượt key -> bỏ qua cả nhánh ActivateFlag.
 	local function resolveFlagDir()
 		if typeof(zoneFlagsDir) ~= "table" then return nil end
 		local displayName = settings.SelectedFlag
@@ -1891,7 +1909,6 @@ local function tryConsumeFlagWithCtx(flagId, amount, ctx, pos)
 		return nil
 	end
 
-	-- Context đặt cờ tự động tại vị trí hiện tại (khác với SpatialQuery = cờ đã có).
 	local placeCtx = nil
 	if typeof(flagCmds) == "table" and typeof(flagCmds.GetMaxPlaceAutomaticContext) == "function" then
 		local okc, c = pcall(flagCmds.GetMaxPlaceAutomaticContext, pos or root.Position)
@@ -1920,7 +1937,6 @@ local function tryConsumeFlagWithCtx(flagId, amount, ctx, pos)
 				return true, "activate-dir"
 			end
 		end
-		-- Thử trực tiếp bằng tên hiển thị / id (một số phiên bản nhận string).
 		if try("activate-name-amount", flagCmds.ActivateFlag, settings.SelectedFlag, amount) then
 			return true, "activate-name-amount"
 		end
@@ -1959,7 +1975,6 @@ local function tryConsumeFlagWithCtx(flagId, amount, ctx, pos)
 		end
 	end
 
-	-- RemoteEvent thật để đặt cờ tự động là "FlexibleFlags_Activate" (fire, không phải invoke).
 	local activateDir = resolveFlagDir()
 	if activateDir then
 		if placeCtx ~= nil and try("fire-activate-dir-placectx", function()
@@ -2008,8 +2023,6 @@ local function tryConsumeFlagWithCtx(flagId, amount, ctx, pos)
 	return false, attempts
 end
 
--- Kích hoạt flag đã chọn tại vị trí hiện tại mỗi tick (loop 1s), KHÔNG teleport.
--- Bám sát obf: lặp lại ActivateFlag để luôn bổ sung cờ ngay khi có thể.
 Core.AutoUseFlag = function()
 	local root = getRoot()
 	if not root then return end
@@ -2024,7 +2037,6 @@ Core.AutoUseFlag = function()
 	local zoneInfo = detectCurrentZone()
 	local anchorPos = (zoneInfo and zoneInfo.anchorPos) or root.Position
 
-	-- Nếu zone đã có cờ còn hiệu lực thì bỏ qua tick này.
 	local hasFlag, _, _, ctx = checkZoneFlag(anchorPos)
 	if hasFlag then return end
 
@@ -2682,7 +2694,6 @@ end
 Core.CombineKeysAll = function() combineKeys(false) end
 Core.CombineKeysOnce = function() combineKeys(true) end
 
--- Gift bags — mở 1 túi mỗi loại mỗi tick (loop UI 0.33s điều tiết nhịp).
 Core.OpenGiftBags = function()
 	local gifts = getGiftIds()
 	local wanted = resolveSelection(settings.SelectedGifts, gifts)
@@ -2703,7 +2714,6 @@ Core.OpenGiftBags = function()
 	return opened
 end
 
--- Lootbox — open max amount per type, all selected types
 local lootboxMaxCache = nil
 
 local function getLootboxMaxOpen()
@@ -2723,8 +2733,6 @@ local function getLootboxMaxOpen()
 	return lootboxMaxCache
 end
 
--- Build a lootbox item instance from an inventory entry using the Items library.
--- Mirrors the original: v438 = Items.Lootbox(itemId); v438._uid = uid.
 local function buildLootboxItem(entry, uid, itemId)
 	local items = Modules.Items
 	if typeof(items) ~= "table" then return nil end
@@ -2745,9 +2753,6 @@ local function buildLootboxItem(entry, uid, itemId)
 	return nil
 end
 
--- Open one batch of a lootbox. Returns true if the server accepted it (verified
--- by the owned amount actually dropping). Tries the module first, then the raw
--- remote with several argument forms.
 local function openLootboxBatch(itemId, uid, batch, cmds)
 	local before = findInventoryEntry(itemId)
 	local beforeAmt = before and (before._am or 0) or 0
@@ -2761,7 +2766,6 @@ local function openLootboxBatch(itemId, uid, batch, cmds)
 			attempts[#attempts + 1] = function() return pcall(cmds.Open, box) end
 		end
 	end
-	-- Raw remote fallbacks (RemoteFunction "Lootbox: Open").
 	attempts[#attempts + 1] = function() return invoke("Lootbox: Open", uid, batch) end
 	attempts[#attempts + 1] = function() return invoke("Lootbox: Open", itemId, batch) end
 	attempts[#attempts + 1] = function() return invoke("Lootbox: Open", uid) end
@@ -2795,7 +2799,6 @@ Core.OpenLootboxes = function()
 			local fails = 0
 			while remaining > 0 do
 				local batch = math.min(remaining, cap)
-				-- re-fetch uid each loop; it can change as stacks collapse
 				uid = findInventoryUid(itemId) or uid
 				local ok = openLootboxBatch(itemId, uid, batch, cmds)
 				if ok then
@@ -2813,11 +2816,8 @@ Core.OpenLootboxes = function()
 end
 
 local fruitCooldown = {}
--- Remembers which consume call form actually worked, so later ticks skip straight
--- to it instead of re-probing every form.
 local fruitConsumeForm = nil
 
--- Read a fruit stack's current owned amount straight from a fresh save (by uid).
 local function getFruitAmount(uid)
 	local save = getSaveCached()
 	if not save or typeof(save.Inventory) ~= "table" or typeof(save.Inventory.Fruit) ~= "table" then
@@ -2827,24 +2827,14 @@ local function getFruitAmount(uid)
 	return (typeof(entry) == "table" and (entry._am or 0)) or 0
 end
 
--- Try to consume `amount` of one fruit stack. Verified by the owned amount
--- actually dropping. Tries several argument forms and the module function,
--- remembering the first that works.
 local function consumeFruitStack(fruitCmds, uid, entry, amount)
 	local before = getFruitAmount(uid)
 	if before <= 0 then return false, 0 end
 
-	-- Game thật fire ("Fruits: Consume", uid, 1) -> dạng uid + amount là chuẩn.
-	-- Thử dạng uid+amount trước; nếu server không nhận batch thì fallback bắn
-	-- từng cái 1 (uid, 1) giống hệt obfuscator để đảm bảo luôn ăn.
 	local forms = {
-		-- form 1: RemoteEvent uid + amount (CHUẨN theo game)
 		function() return fire("Fruits: Consume", uid, amount) end,
-		-- form 2: RemoteEvent entry table + amount
 		function() return fire("Fruits: Consume", entry, amount) end,
-		-- form 3: RemoteEvent { uid } + amount
 		function() return fire("Fruits: Consume", { uid }, amount) end,
-		-- form 4: module command directly
 		function()
 			if typeof(fruitCmds.Consume) == "function" then
 				return pcall(fruitCmds.Consume, entry, amount)
@@ -2870,7 +2860,6 @@ local function consumeFruitStack(fruitCmds, uid, entry, amount)
 		end
 	end
 
-	-- Fallback cuối: bắn từng cái 1 đúng như game (uid, 1), lặp tới khi hết amount.
 	local consumed = 0
 	for _ = 1, amount do
 		local cur = getFruitAmount(uid)
@@ -2923,8 +2912,6 @@ Core.ConsumeFruits = function()
 			local last = fruitCooldown[cooldownKey]
 			local now = os.clock()
 			if not (last and now - last < 2) then
-				-- Try to find how many we can consume at once; fall back to a
-				-- safe batch if the limit query signature doesn't match.
 				local maxConsume = item.entry._am or 0
 				local okLimit, value = pcall(fruitCmds.GetMaxConsume, item.entry)
 				if okLimit and typeof(value) == "number" and value > 0 then
@@ -2956,11 +2943,10 @@ Core.ConsumeFruits = function()
 end
 
 -- -----------------------------------------------------
--- Auto Time Trial — open earned time-trial chests
+-- Auto Time Trial
 -- -----------------------------------------------------
 local timeTrialChestCache = nil
 
--- Resolve the list of time-trial chest ids from Types.TimeTrials.ChestDirectory.
 local function getTimeTrialChestIds()
 	if timeTrialChestCache then return timeTrialChestCache end
 	timeTrialChestCache = {}
@@ -2973,7 +2959,6 @@ local function getTimeTrialChestIds()
 			dirName = data.ChestDirectory
 		end
 	end
-	-- ChestDirectory is a Directory folder name; enumerate its children.
 	if typeof(dirName) == "string" and dirName ~= "" then
 		local ids = getDirectoryIds(dirName)
 		if #ids == 0 then ids = getLibraryDirIds(dirName) end
@@ -2988,9 +2973,6 @@ Core.OpenTimeTrialChests = function()
 
 	local chestIds = getTimeTrialChestIds()
 
-	-- Try a no-argument open first (claims the currently-earned chest),
-	-- then per-chest-id forms. Any accepted call is fine; the server ignores
-	-- ones with nothing to claim.
 	local attempts = { function() return invoke(remote) end }
 	for _, id in ipairs(chestIds) do
 		attempts[#attempts + 1] = function() return invoke(remote, id) end
@@ -3008,7 +2990,6 @@ Core.FarmTreehouse = function()
 	local save = getSaveCached()
 	if not save then return end
 	cleanupTreehouseModels()
-	-- bytecode bails when player DOES hold a Secret Key
 	local keyEntry = findInventoryEntry("Secret Key")
 	if not (keyEntry and (keyEntry._am or 0) > 0) then return end
 	local rooms = save.SecretRooms
@@ -3057,7 +3038,6 @@ Core.ClaimBestTreehouseItem = function()
 	return true, bestRap
 end
 
-
 Core.ClaimFakeCharacters = function()
 	local things = workspace:FindFirstChild("__THINGS")
 	local folder = things and things:FindFirstChild("AdminAbuseCharacters")
@@ -3087,8 +3067,6 @@ Core.UpgradeFruits = function(shinyOnly)
 	for uid, entry in pairs(save.Inventory.Fruit) do
 		if typeof(entry) == "table" and (entry._am or 0) > 0 then
 			if table.find(wanted, entry.id) then
-				-- Máy shiny biến fruit THƯỜNG -> shiny, nên chỉ gửi fruit CHƯA shiny.
-				-- Fruit đã shiny (entry.sh) thì bỏ qua, không gửi vào máy shiny nữa.
 				if shinyOnly then
 					if not entry.sh then
 						payload[uid] = 1
@@ -3200,26 +3178,19 @@ Core.CombineCards = function()
 	invalidateSaveCache()
 end
 
--- === Chỉ fuse pet NỞ TỪ EGG (fromEgg ~= nil). Pet fromEgg=nil => chặn. ===
-local EVENT_PETS_MANUAL = {
-	-- ["Tên Pet"] = true,  -- chặn tay thêm nếu cần
-}
+local EVENT_PETS_MANUAL = {}
 
--- Số pet tối thiểu máy Fuse chấp nhận 1 lần ép.
 local FUSE_MIN = 3
 
--- Lấy config pet theo id, thử nhiều đường để tránh trượt key.
 local function getPetConfig(id, instance)
 	local dir = Modules.PetsDir
 	if typeof(dir) == "table" then
 		local cfg = dir[id]
 		if typeof(cfg) == "table" then return cfg end
-		-- Một số bản key lồng trong dir.Pets.
 		if typeof(dir.Pets) == "table" and typeof(dir.Pets[id]) == "table" then
 			return dir.Pets[id]
 		end
 	end
-	-- Thử lấy thẳng từ instance (item object) nếu có config đính kèm.
 	if typeof(instance) == "table" then
 		if typeof(instance._config) == "table" then return instance._config end
 		if typeof(instance._data) == "table" then return instance._data end
@@ -3231,16 +3202,13 @@ local function getPetConfig(id, instance)
 	return nil
 end
 
--- Pet được phép fuse khi: không nằm blacklist tay VÀ config resolve được
--- fromEgg KHÁC nil (tức pet nở ra từ một quả trứng).
 local function isFusablePet(entry, instance)
 	if typeof(entry) ~= "table" then return false end
 	local id = entry.id
 	if typeof(id) ~= "string" then return false end
 	if EVENT_PETS_MANUAL[id] then return false end
 	local cfg = getPetConfig(id, instance)
-	if typeof(cfg) ~= "table" then return false end   -- không rõ => chặn
-	-- Chặn tất cả pet không mở từ egg.
+	if typeof(cfg) ~= "table" then return false end
 	if cfg.fromEgg == nil then return false end
 	return true
 end
@@ -3256,15 +3224,13 @@ Core.FusePets = function()
 	for uid, entry in pairs(save.Inventory.Pet) do
 		if typeof(entry) == "table" then
 			local ok, instance = pcall(items.Pet.From, items.Pet, entry)
-			if ok and instance and isFusablePet(entry, instance) then   -- << pet from egg (gồm cả normal)
+			if ok and instance and isFusablePet(entry, instance) then
 				table.insert(uids, uid)
 			end
 		end
 	end
 	local amount = tonumber(settings.FuseAmount) or 5
 	if amount < 1 then amount = 1 end
-	-- Ép theo số pet có sẵn: đủ `amount` thì ép `amount`, ít hơn nhưng >= FUSE_MIN
-	-- thì ép hết. Trước đây bail khi < amount nên lâu lâu không chạy.
 	local count = math.min(#uids, amount)
 	if count < FUSE_MIN then return end
 	local payload = {}
@@ -4896,6 +4862,7 @@ if tabs.eggs then
 			settings.HideEggAnim = value
 			queueSave()
 			if value then pcall(hideEggGuis) end
+			pcall(installEggHook)
 		end,
 	})
 	tabs.eggs:CreateToggle({
@@ -4904,7 +4871,7 @@ if tabs.eggs then
 		Callback = function(value)
 			settings.HookEggAnimation = value
 			queueSave()
-			installEggHook()
+			pcall(installEggHook)
 		end,
 	})
 	tabs.eggs:CreateToggle({
@@ -5135,8 +5102,6 @@ if tabs.rank then
 		Callback = toggleLoop("RankRewards", 5, Core.ClaimRankRewards),
 	})
 	local AUTO_RANK_URL = "https://raw.githubusercontent.com/ryomolochiton/367/refs/heads/main/AutoRank.lua"
-	-- Promoted onto `vrt` so the "apply saved toggles" restore block can reach it
-	-- after a rejoin (previously it was a local, so AutoRank never auto-started).
 	vrt.loadAutoRank = function()
 		if vrt.autoRankFunc then return vrt.autoRankFunc end
 		local ok, source = pcall(game.HttpGet, game, AUTO_RANK_URL)
@@ -5463,7 +5428,6 @@ if tabs.secret then
 			merchantState.lastVisit = nil
 			merchantState.attempted = false
 			expeditionState.lastClaimAt = 0
-			lootboxIndex = 0
 			rayfield:Notify({ Title = "VRT", Content = "Đã xoá tất cả cache", Duration = 3 })
 		end,
 	})
@@ -5608,6 +5572,7 @@ task.spawn(function()
 	if settings.AutoClaimExpedition then startLoop("AutoClaimExpedition", 5, function() Core.ClaimExpedition() end) end
 	if settings.AdminAbuse then startLoop("AdminAbuse", 5, Core.ClaimFakeCharacters) end
 	if settings.DMAutoJoin then startLoop("DMAutoJoin", 5, autoJoinTick) end
+	if settings.HookEggAnimation or settings.HideEggAnim then pcall(installEggHook) end
 end)
 
 -- -----------------------------------------------------
@@ -5654,6 +5619,8 @@ getgenv().VRT_Unload = function()
 			eggFrontend[funcName] = getgenv().VRT_ORIGINAL_PLAY_EGG
 		end)
 	end
+	vrt.eggHookFn = nil
+	eggHookThread = nil
 
 	pcall(saveConfig)
 	pcall(function() rayfield:Destroy() end)
