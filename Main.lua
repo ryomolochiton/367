@@ -1,8 +1,8 @@
 -- =====================================================
--- VRT HUB — PET SIMULATOR 99 v1.9.4
+-- VRT HUB — PET SIMULATOR 99 v1.9.5
 -- Bỏ hết button "once/now", chỉ giữ toggle
 -- Flag: chỉ dùng khi trong zone, không teleport
--- Fix: Hook Egg Animation hiện text (persistent + identity 4)
+-- Fix: Hook Egg Animation dùng hookfunction + resolve Message.Bottom động
 -- =====================================================
 
 if getgenv().VRT_LOADED then
@@ -203,7 +203,7 @@ end
 -- -----------------------------------------------------
 local vrt = getgenv().VRT or {}
 getgenv().VRT = vrt
-vrt.Version = "1.9.4"
+vrt.Version = "1.9.5"
 vrt.connections = {}
 vrt.loops = {}
 vrt.fruitLog = {}
@@ -694,12 +694,23 @@ runService.RenderStepped:Connect(function()
 end)
 
 -- -----------------------------------------------------
--- Egg animation hook (persistent — game ghi đè env mỗi world)
+-- EGG ANIMATION HOOK
+-- hookfunction lên chính function object (bắt cả call local),
+-- env-assign chỉ là fallback. Message.Bottom resolve động mỗi lần.
 -- -----------------------------------------------------
-local eggFrontend = nil
-local eggFrontendPath = nil
-local eggHookThread = nil
-vrt.eggHookFn = nil
+local eggHookState = {
+	frontend = nil,
+	path = nil,
+	funcName = nil,
+	hook = nil,
+	callOriginal = nil,
+	hookedTargets = setmetatable({}, { __mode = "k" }),
+	messageFn = nil,
+	messageOwner = nil,
+	thread = nil,
+	lastError = nil,
+	lastVia = nil,
+}
 
 local function findEggFrontend()
 	local paths = {
@@ -717,8 +728,8 @@ local function findEggFrontend()
 		if node then
 			local ok, env = pcall(getsenv, node)
 			if ok and typeof(env) == "table" then
-				eggFrontend = env
-				eggFrontendPath = table.concat(path, ".")
+				eggHookState.frontend = env
+				eggHookState.path = table.concat(path, ".")
 				return true
 			end
 		end
@@ -737,8 +748,8 @@ local function scanForPlayEgg()
 					if typeof(name) == "string" and typeof(value) == "function"
 						and (name:lower():find("playegg") or name:lower():find("egganim"))
 					then
-						eggFrontend = env
-						eggFrontendPath = "scan:" .. script.Name .. "." .. name
+						eggHookState.frontend = env
+						eggHookState.path = "scan:" .. script.Name .. "." .. name
 						return true
 					end
 				end
@@ -748,125 +759,220 @@ local function scanForPlayEgg()
 	return false
 end
 
--- Message.Bottom nằm trong env frontend, gọi dạng dot với 1 table.
-local function resolveMessageFn()
-	if not eggFrontend then return nil, nil end
-	local msg = rawget(eggFrontend, "Message")
-	if typeof(msg) ~= "table" then
-		local ok, value = pcall(function() return eggFrontend.Message end)
-		msg = ok and value or nil
+-- Tìm function hiển thị message dưới màn hình. Không cache nil.
+local function resolveMessageBottom()
+	local function pickBottom(tbl)
+		if typeof(tbl) ~= "table" then return nil, nil end
+		local ok, bottom = pcall(function() return tbl.Bottom end)
+		if ok and typeof(bottom) == "function" then return bottom, tbl end
+		return nil, nil
 	end
-	if typeof(msg) == "table" then
-		local bottom = rawget(msg, "Bottom")
-		if typeof(bottom) == "function" then return bottom, msg end
-	end
-	for _, value in pairs(eggFrontend) do
-		if typeof(value) == "table" then
-			local bottom = rawget(value, "Bottom")
-			if typeof(bottom) == "function" then return bottom, value end
+
+	local env = eggHookState.frontend
+	if env then
+		local okMsg, msg = pcall(function() return env.Message end)
+		if okMsg then
+			local bottom, owner = pickBottom(msg)
+			if bottom then return bottom, owner end
+		end
+		for _, value in pairs(env) do
+			if typeof(value) == "table" then
+				local bottom, owner = pickBottom(value)
+				if bottom then return bottom, owner end
+			end
 		end
 	end
+
+	local okScripts, scripts = pcall(getrunningscripts)
+	if okScripts and typeof(scripts) == "table" then
+		for _, script in ipairs(scripts) do
+			local okEnv, senv = pcall(getsenv, script)
+			if okEnv and typeof(senv) == "table" then
+				local okMsg, msg = pcall(function() return senv.Message end)
+				if okMsg then
+					local bottom, owner = pickBottom(msg)
+					if bottom then return bottom, owner end
+				end
+			end
+		end
+	end
+
 	return nil, nil
 end
 
--- Thay animation full màn hình bằng dòng text nhỏ phía dưới.
+-- Gọi Message.Bottom trên identity 4, thử nhiều dạng tham số.
 local function pushEggMessage(eggName)
-	local prevIdentity = 4
+	local prevIdentity = 2
 	pcall(function() prevIdentity = getthreadidentity() end)
 	pcall(setthreadidentity, 4)
-	local ok = pcall(function()
+
+	local ok, err = pcall(function()
 		local maxHatch = getMaxHatch()
 		local color = Color3.fromRGB(math.random(0, 255), math.random(0, 255), math.random(0, 255))
-		local fn, owner = resolveMessageFn()
-		if not fn then return end
-		local payload = {
-			Message = "Still Openin " .. tostring(eggName) .. " " .. tostring(maxHatch),
-			Color = color,
-		}
-		if not pcall(fn, payload) and owner then
-			pcall(fn, owner, payload)
+		local text = "Still Openin " .. tostring(eggName) .. " " .. tostring(maxHatch)
+		local payload = { Message = text, Color = color }
+
+		local bottom = eggHookState.messageFn
+		local owner = eggHookState.messageOwner
+		if not bottom then
+			bottom, owner = resolveMessageBottom()
+			eggHookState.messageFn = bottom
+			eggHookState.messageOwner = owner
+		end
+		if not bottom then
+			error("Message.Bottom not found")
+		end
+
+		local okCall, callErr = pcall(bottom, payload)
+		if not okCall and owner then
+			okCall, callErr = pcall(bottom, owner, payload)
+		end
+		if not okCall then
+			okCall, callErr = pcall(bottom, text, color)
+		end
+		if not okCall then
+			eggHookState.messageFn = nil
+			eggHookState.messageOwner = nil
+			error(tostring(callErr))
 		end
 	end)
+
 	pcall(setthreadidentity, prevIdentity)
+	eggHookState.lastError = ok and nil or tostring(err)
 	return ok
 end
 
 local function applyEggHook()
-	if not eggFrontend then return false end
+	local env = eggHookState.frontend
+	if not env then
+		if not findEggFrontend() then scanForPlayEgg() end
+		env = eggHookState.frontend
+		if not env then return false end
+	end
 
-	local funcName = getgenv().VRT_ORIGINAL_PLAY_EGG_NAME
-	if not funcName or typeof(eggFrontend[funcName]) ~= "function" then
+	local funcName = eggHookState.funcName
+	if not funcName or typeof(env[funcName]) ~= "function" then
 		funcName = nil
 		for _, name in ipairs({ "PlayEggAnimation", "PlayAnimation", "PlayEgg", "PlayHatch" }) do
-			if typeof(eggFrontend[name]) == "function" then
+			if typeof(env[name]) == "function" then
 				funcName = name
 				break
 			end
 		end
+		if not funcName then
+			for name, value in pairs(env) do
+				if typeof(name) == "string" and typeof(value) == "function"
+					and (name:lower():find("playegg") or name:lower():find("egganim"))
+				then
+					funcName = name
+					break
+				end
+			end
+		end
 	end
 	if not funcName then return false end
+	eggHookState.funcName = funcName
 
-	if not getgenv().VRT_ORIGINAL_PLAY_EGG then
-		getgenv().VRT_ORIGINAL_PLAY_EGG = eggFrontend[funcName]
-		getgenv().VRT_ORIGINAL_PLAY_EGG_NAME = funcName
-	end
-	local originalPlayEgg = getgenv().VRT_ORIGINAL_PLAY_EGG
-	vrt.originalPlayEgg = originalPlayEgg
-
-	if eggFrontend[funcName] == vrt.eggHookFn then return true end
-
-	local hook = function(eggName, ...)
-		if settings.HideEggAnim then pcall(hideEggGuis) end
-		if settings.HookEggAnimation then
-			pushEggMessage(eggName)
-			return
+	if not eggHookState.hook then
+		local hook = function(eggName, ...)
+			if settings.HideEggAnim then pcall(hideEggGuis) end
+			if settings.HookEggAnimation then
+				pushEggMessage(eggName)
+				return
+			end
+			local call = eggHookState.callOriginal
+			if call then
+				return call(eggName, ...)
+			end
 		end
-		return originalPlayEgg(eggName, ...)
+		pcall(setstackhidden, hook, true)
+		pcall(debug.setinfo, hook, "s", "[C]")
+		pcall(debug.setinfo, hook, "n", "")
+		eggHookState.hook = hook
 	end
-	pcall(setstackhidden, hook, true)
-	pcall(debug.setinfo, hook, "s", "[C]")
-	pcall(debug.setinfo, hook, "n", "")
-	vrt.eggHookFn = hook
-	eggFrontend[funcName] = hook
+
+	local target = env[funcName]
+	if target == eggHookState.hook then
+		return true
+	end
+	if eggHookState.hookedTargets[target] then
+		return true
+	end
+
+	-- 1) hookfunction: bắt cả call qua local/upvalue
+	eggHookState.hookedTargets[target] = true
+	local ok, restored = pcall(hookfunction, target, newcclosure(eggHookState.hook))
+	if not ok then
+		ok, restored = pcall(hookfunction, target, eggHookState.hook)
+	end
+	if ok and typeof(restored) == "function" then
+		if not eggHookState.callOriginal then
+			eggHookState.callOriginal = restored
+		end
+		eggHookState.lastVia = "hookfunction"
+		return true
+	end
+
+	-- 2) fallback: gán lại env field
+	eggHookState.hookedTargets[target] = nil
+	if not eggHookState.callOriginal then
+		eggHookState.callOriginal = target
+	end
+	pcall(function() env[funcName] = eggHookState.hook end)
+	eggHookState.lastVia = "env"
 	return true
 end
 
 local function installEggHook()
-	if not eggFrontend then
+	if not eggHookState.frontend then
 		if not findEggFrontend() then scanForPlayEgg() end
 	end
 	return applyEggHook()
 end
 
--- Re-apply liên tục: game reset env field sau mỗi lần load world.
 local function startEggHookLoop()
-	if eggHookThread then return end
-	eggHookThread = task.spawn(function()
+	if eggHookState.thread then return end
+	eggHookState.thread = task.spawn(function()
 		while getgenv().VRT_LOADED do
 			if settings.HookEggAnimation or settings.HideEggAnim then
-				if not eggFrontend
-					or not eggFrontend[getgenv().VRT_ORIGINAL_PLAY_EGG_NAME or "PlayEggAnimation"]
-				then
-					if not findEggFrontend() then scanForPlayEgg() end
-				end
 				pcall(applyEggHook)
-				task.wait(0.15)
+				task.wait(0.1)
 			else
-				if vrt.eggHookFn and eggFrontend and getgenv().VRT_ORIGINAL_PLAY_EGG then
-					local funcName = getgenv().VRT_ORIGINAL_PLAY_EGG_NAME or "PlayEggAnimation"
-					pcall(function() eggFrontend[funcName] = getgenv().VRT_ORIGINAL_PLAY_EGG end)
-					vrt.eggHookFn = nil
-				end
 				task.wait(0.5)
 			end
 		end
-		eggHookThread = nil
+		eggHookState.thread = nil
 	end)
+end
+
+getgenv().VRT_EggDebug = function()
+	print("[VRT Egg] path:", tostring(eggHookState.path))
+	print("[VRT Egg] funcName:", tostring(eggHookState.funcName))
+	print("[VRT Egg] via:", tostring(eggHookState.lastVia))
+	print("[VRT Egg] lastError:", tostring(eggHookState.lastError))
+	local env = eggHookState.frontend
+	if env then
+		print("[VRT Egg] PlayEggAnimation:", typeof(env.PlayEggAnimation))
+		local okMsg, msg = pcall(function() return env.Message end)
+		print("[VRT Egg] Message:", okMsg and typeof(msg) or ("error: " .. tostring(msg)))
+		if okMsg and typeof(msg) == "table" then
+			local okB, bottom = pcall(function() return msg.Bottom end)
+			print("[VRT Egg] Message.Bottom:", okB and typeof(bottom) or ("error: " .. tostring(bottom)))
+		end
+	end
+	local bottom = resolveMessageBottom()
+	print("[VRT Egg] resolved Bottom:", typeof(bottom))
+end
+
+getgenv().VRT_EggTest = function()
+	local ok = pushEggMessage("Test")
+	print("[VRT Egg] test message:", ok and "OK" or ("FAIL: " .. tostring(eggHookState.lastError)))
+	return ok
 end
 
 task.spawn(function()
 	for _ = 1, 10 do
-		if eggFrontend then break end
+		if eggHookState.frontend then break end
 		if not findEggFrontend() then scanForPlayEgg() end
 		task.wait(1)
 	end
@@ -1409,7 +1515,6 @@ Core.ClickAuraViz = function()
 	viz.CFrame = CFrame.new(root.Position) * VIZ_ROTATION
 end
 
--- Custom egg — NO TELEPORT
 local function hatchCustomEgg(uuid)
 	if not uuid or uuid == "" then return 0 end
 	local maxHatch = getMaxHatch()
@@ -1470,7 +1575,6 @@ Core.OpenEgg = function()
 	end
 end
 
--- Open selected egg — NO TELEPORT
 Core.OpenSelectedEgg = function()
 	local eggId = settings.SelectedEggId
 	if not eggId or eggId == "" then return end
@@ -4872,6 +4976,17 @@ if tabs.eggs then
 			settings.HookEggAnimation = value
 			queueSave()
 			pcall(installEggHook)
+			if value then
+				task.delay(0.5, function()
+					if not eggHookState.lastVia then
+						rayfield:Notify({
+							Title = "Egg Hook",
+							Content = "Chưa hook được. Bấm Debug Egg Hook để xem chi tiết.",
+							Duration = 6,
+						})
+					end
+				end)
+			end
 		end,
 	})
 	tabs.eggs:CreateToggle({
@@ -4934,6 +5049,24 @@ if tabs.eggs then
 			clearDirectoryCache()
 			refreshAllDropdowns()
 			rayfield:Notify({ Title = "VRT", Content = "Đã refresh dropdowns", Duration = 3 })
+		end,
+	})
+	tabs.eggs:CreateButton({
+		Name = "Debug Egg Hook (in ra console)",
+		Callback = function()
+			pcall(getgenv().VRT_EggDebug)
+			rayfield:Notify({ Title = "Egg Hook", Content = "Đã in debug ra console (F9).", Duration = 4 })
+		end,
+	})
+	tabs.eggs:CreateButton({
+		Name = "Test Egg Message (thử hiện text)",
+		Callback = function()
+			local ok = getgenv().VRT_EggTest and getgenv().VRT_EggTest()
+			rayfield:Notify({
+				Title = "Egg Hook",
+				Content = ok and "Đã gửi test message." or ("Thất bại: " .. tostring(eggHookState.lastError)),
+				Duration = 6,
+			})
 		end,
 	})
 end
@@ -5428,6 +5561,8 @@ if tabs.secret then
 			merchantState.lastVisit = nil
 			merchantState.attempted = false
 			expeditionState.lastClaimAt = 0
+			eggHookState.messageFn = nil
+			eggHookState.messageOwner = nil
 			rayfield:Notify({ Title = "VRT", Content = "Đã xoá tất cả cache", Duration = 3 })
 		end,
 	})
@@ -5613,14 +5748,16 @@ getgenv().VRT_Unload = function()
 		AntiCheat.active = false
 	end
 
-	if eggFrontend and getgenv().VRT_ORIGINAL_PLAY_EGG then
-		local funcName = getgenv().VRT_ORIGINAL_PLAY_EGG_NAME or "PlayEggAnimation"
+	if eggHookState.callOriginal and eggHookState.frontend and eggHookState.funcName then
 		pcall(function()
-			eggFrontend[funcName] = getgenv().VRT_ORIGINAL_PLAY_EGG
+			eggHookState.frontend[eggHookState.funcName] = eggHookState.callOriginal
 		end)
 	end
-	vrt.eggHookFn = nil
-	eggHookThread = nil
+	eggHookState.hook = nil
+	eggHookState.callOriginal = nil
+	eggHookState.thread = nil
+	eggHookState.messageFn = nil
+	eggHookState.messageOwner = nil
 
 	pcall(saveConfig)
 	pcall(function() rayfield:Destroy() end)
