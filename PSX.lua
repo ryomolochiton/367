@@ -19,34 +19,54 @@ local virtualUserService = game:GetService("VirtualUser")
 local RAYFIELD_URL = "https://sirius.menu/rayfield"
 local DISCORD_URL = "https://discord.gg/xbyte"
 local TAB_ICON = 4483362458
-local COIN_TIMEOUT = 8
-local LOOTBAG_TIMEOUT = 3
 local BLACKLIST_TIME = 60
-local FARM_MODES = { "Normal", "Multi Target", "Nearest", "Highest Value", "Chests" }
-local HATCH_AMOUNTS = { "1", "3", "8" }
+local LOOTBAG_TIMEOUT = 3
+local HATCH_BUFFER = 3
+local RESYNC_INTERVAL = 20
+local BEST_AREA = "Best Unlocked Area"
+local FARM_MODES = { "All Pets on One Coin", "One Pet per Coin" }
+local COIN_PRIORITIES = { "Nearest", "Highest Health", "Lowest Health" }
+local EGG_PRESETS = { "Best Unlocked Egg", "Best Unlocked Normal Egg", "Best Unlocked Golden Egg" }
+local EGG_AMOUNTS = { "Best Available", "1 Egg", "3 Eggs", "8 Eggs" }
 local DEFAULT_BOOSTS = { "Triple Coins", "Triple Damage" }
-local CHEST_KEYWORDS = { "chest", "vault", "safe" }
+local DEFAULT_CHESTS = { "Giant Tech Chest", "Giant Steampunk Chest", "Giant Rainbow Chest" }
+local PROTECTED_RARITIES = { Huge = true, Titanic = true }
 
 -- State.
 local localPlayer = playersService.LocalPlayer
-local PsxHub = { running = true, rayfield = nil, flags = {}, connections = {} }
+local PsxHub = { running = true, rayfield = nil, flags = {}, connections = {}, status = {} }
 local flags = PsxHub.flags
-local library, network, coinsFolder
-local selectedEggId = nil
-local eggLookup = {}
+local status = PsxHub.status
+local library, network
+local coinCache = {}
+local petAssignments = {}
 local blacklist = {}
 local boostCooldowns = {}
 local runningLootbags = {}
+local managedRarities = {}
+local homeLabels = {}
+local areaLookup = {}
+local eggLookup = {}
+local upgradeLookup = {}
+local areaDropdown, eggDropdown, chestDropdown
 local merchantBought = false
-local areaDropdown = nil
-local eggDropdown = nil
+local hatchMode = false
+local originalOpenEgg = nil
+local lastResync = 0
 
-flags.farmMode = "Normal"
-flags.farmArea = "All"
-flags.farmDelay = 0.5
-flags.hatchAmount = 1
-flags.darkMatterPet = ""
+flags.farmArea = BEST_AREA
+flags.farmMode = FARM_MODES[2]
+flags.coinPriority = COIN_PRIORITIES[1]
+flags.farmDelay = 0.4
+flags.eggChoice = EGG_PRESETS[2]
+flags.eggAmount = EGG_AMOUNTS[1]
+flags.keepPets = 4
+flags.fuseCount = 12
+flags.selectedChests = {}
+flags.selectedUpgrades = {}
 flags.autoBoosts = {}
+flags.deleteRarities = {}
+flags.fuseRarities = {}
 
 ---Resolve the executor request function.
 ---@return function
@@ -82,6 +102,19 @@ local function firstOption(option)
 	return option
 end
 
+---Turn the selected dropdown options into a set.
+---@param options table|string
+---@return table
+local function toSet(options)
+	local set = {}
+
+	for _, name in ipairs(type(options) == "table" and options or { options }) do
+		set[name] = true
+	end
+
+	return set
+end
+
 ---Format seconds as HH:MM:SS.
 ---@param seconds number
 ---@return string
@@ -98,7 +131,19 @@ local function notify(title, content)
 		return
 	end
 
-	PsxHub.rayfield:Notify({ Title = title, Content = content, Duration = 5 })
+	pcall(PsxHub.rayfield.Notify, PsxHub.rayfield, { Title = title, Content = content, Duration = 6 })
+end
+
+---Call a function and return its result, or nil when it errors.
+---@param callback function
+---@return any
+local function safeCall(callback, ...)
+	local success, result = pcall(callback, ...)
+	if success then
+		return result
+	end
+
+	return nil
 end
 
 ---Get the local player root part.
@@ -144,8 +189,7 @@ end
 ---@return table
 local function resolveLibrary()
 	local frameworkFolder = replicatedStorage:FindFirstChild("Framework")
-	local frameworkLibrary = frameworkFolder and frameworkFolder:FindFirstChild("Library")
-	local libraryModule = frameworkLibrary
+	local libraryModule = frameworkFolder and frameworkFolder:FindFirstChild("Library")
 
 	if not (libraryModule and libraryModule:IsA("ModuleScript")) then
 		libraryModule = replicatedStorage:WaitForChild("Library", 30)
@@ -159,13 +203,27 @@ local function resolveLibrary()
 	return gameLibrary
 end
 
+---Get the player save.
+---@return table?
+local function getSave()
+	return safeCall(library.Save.Get)
+end
+
+---Get the amount of a currency.
+---@param save table
+---@param currency string
+---@return number
+local function getCurrency(save, currency)
+	return tonumber(save[currency]) or 0
+end
+
 ---Get the uids of every equipped pet.
 ---@return string[]
 local function getEquippedPets()
 	local uids = {}
-	local success, equipped = pcall(library.PetCmds.GetEquipped, nil, true)
+	local equipped = safeCall(library.PetCmds.GetEquipped, nil, true)
 
-	if success and type(equipped) == "table" then
+	if type(equipped) == "table" then
 		for _, uid in ipairs(equipped) do
 			table.insert(uids, uid)
 		end
@@ -174,228 +232,619 @@ local function getEquippedPets()
 	return uids
 end
 
----Get every coin currently alive in the selected area.
----@param areaName string
+---Get the equipped pet set.
 ---@return table
-local function getCoins(areaName)
-	local response = invoke("Get Coins")
-	local coins = {}
-
-	if type(response) ~= "table" then
-		return coins
+local function getEquippedSet()
+	local set = {}
+	for _, uid in ipairs(getEquippedPets()) do
+		set[uid] = true
 	end
 
-	for coinId, coin in pairs(response) do
-		if type(coin) == "table" and (areaName == "All" or tostring(coin.a) == areaName) then
-			table.insert(coins, {
-				index = tostring(coinId),
-				name = tostring(coin.n),
-				health = tonumber(coin.h) or 0,
-				position = typeof(coin.p) == "Vector3" and coin.p or nil,
-			})
+	return set
+end
+
+---Take the first uids of a list.
+---@param uids string[]
+---@param count number
+---@return string[]
+local function takeUids(uids, count)
+	local taken = {}
+	for index = 1, count do
+		taken[index] = uids[index]
+	end
+
+	return taken
+end
+
+---Get the current world name.
+---@return string?
+local function getWorldName()
+	return safeCall(library.WorldCmds.Get)
+end
+
+---Check if the player owns an area.
+---@param name string
+---@return boolean
+local function hasArea(name)
+	return safeCall(library.WorldCmds.HasArea, name) == true
+end
+
+---Check if an area is open (not locked by an event).
+---@param name string
+---@return boolean
+local function isAreaOpen(name)
+	return safeCall(library.RebornLock.AreaOpen, name) ~= false
+end
+
+---Get the farmable areas of the current world, worst first.
+---@return table
+local function getWorldAreas()
+	local world = getWorldName()
+	local areas = {}
+
+	for name, area in pairs(library.Directory.Areas) do
+		if type(area) == "table" and area.world == world and not area.hidden and not area.isShop then
+			table.insert(areas, { name = name, data = area })
 		end
 	end
 
-	return coins
+	table.sort(areas, function(a, b)
+		return (tonumber(a.data.mult) or 0) < (tonumber(b.data.mult) or 0)
+	end)
+
+	return areas
 end
 
----Collect the area names that currently have coins.
----@return string[]
-local function collectAreaOptions()
-	local response = invoke("Get Coins")
-	local options = { "All" }
-	local seen = { All = true }
-	local names = {}
+---Get the best area the player owns.
+---@return string?
+local function getBestArea()
+	local areas = getWorldAreas()
 
-	if type(response) == "table" then
-		for _, coin in pairs(response) do
-			if type(coin) == "table" and coin.a and not seen[tostring(coin.a)] then
-				seen[tostring(coin.a)] = true
-				table.insert(names, tostring(coin.a))
+	for index = #areas, 1, -1 do
+		local name = areas[index].name
+		if hasArea(name) and isAreaOpen(name) then
+			return name
+		end
+	end
+
+	return nil
+end
+
+---Get the cheapest area that is still locked.
+---@return string?, table?
+local function getNextArea()
+	local best, bestCost, bestGate = nil, math.huge, nil
+
+	for _, area in ipairs(getWorldAreas()) do
+		local gate = area.data.gate
+		if gate and tonumber(gate.cost) and not hasArea(area.name) and isAreaOpen(area.name) and gate.cost < bestCost then
+			best, bestCost, bestGate = area.name, gate.cost, gate
+		end
+	end
+
+	return best, bestGate
+end
+
+---Build a coin entry from the server data.
+---@param id string
+---@param data table
+---@return table
+local function normalizeCoin(id, data)
+	return {
+		index = tostring(id),
+		name = tostring(data.n),
+		area = data.a and tostring(data.a) or nil,
+		health = tonumber(data.h) or 0,
+		position = typeof(data.p) == "Vector3" and data.p or nil,
+		distance = math.huge,
+	}
+end
+
+---Reload every coin of the world from the server.
+local function resyncCoins()
+	local response = invoke("Get Coins")
+	if type(response) ~= "table" then
+		return
+	end
+
+	local fresh = {}
+	for coinId, data in pairs(response) do
+		if type(data) == "table" then
+			fresh[tostring(coinId)] = normalizeCoin(coinId, data)
+		end
+	end
+
+	coinCache = fresh
+	lastResync = os.clock()
+end
+
+---Listen to a game network event.
+---@param name string
+---@param handler function
+local function connectEvent(name, handler)
+	local signal = safeCall(network.Fired, name)
+	if not signal then
+		return
+	end
+
+	local connection = safeCall(signal.Connect, signal, handler)
+	if connection then
+		table.insert(PsxHub.connections, connection)
+	end
+end
+
+---Get the distance the server accepts for coins.
+---@return number
+local function getCoinRange()
+	local settings = library.Settings
+	return (settings and tonumber(settings.CoinGrabDistance) or 300) - 20
+end
+
+---Move the character next to a position.
+---@param position Vector3
+local function teleportTo(position)
+	local root = getRoot()
+	if root then
+		root.CFrame = CFrame.new(position + Vector3.new(0, 6, 0))
+	end
+end
+
+---Check if a coin is a giant one.
+---@param coin table
+---@return boolean
+local function isGiantCoin(coin)
+	return string.find(string.lower(coin.name), "giant", 1, true) ~= nil
+end
+
+---Send pets to farm one coin. Returns the pets that joined.
+---@param coinId string
+---@param petUids string[]
+---@return string[]
+local function joinCoin(coinId, petUids)
+	local joined = {}
+	local result = invoke("Join Coin", coinId, petUids)
+
+	if type(result) ~= "table" then
+		return joined
+	end
+
+	for petUid, state in pairs(result) do
+		if state == true then
+			table.insert(joined, petUid)
+			fire("Farm Coin", coinId, petUid)
+		end
+	end
+
+	return joined
+end
+
+---Give every pet without a coin one, following the farming mode.
+---@param pets string[]
+---@param coins table
+---@param mode string
+local function assignPets(pets, coins, mode)
+	local occupancy, needy = {}, {}
+
+	for _, petUid in ipairs(pets) do
+		local coinId = petAssignments[petUid]
+		if coinId and coinCache[coinId] then
+			occupancy[coinId] = (occupancy[coinId] or 0) + 1
+		else
+			petAssignments[petUid] = nil
+			table.insert(needy, petUid)
+		end
+	end
+
+	if #needy == 0 or #coins == 0 then
+		return
+	end
+
+	local groups, groupOrder = {}, {}
+	for _, petUid in ipairs(needy) do
+		local target = nil
+
+		if mode == FARM_MODES[1] then
+			for _, coin in ipairs(coins) do
+				if (occupancy[coin.index] or 0) > 0 then
+					target = coin
+					break
+				end
+			end
+
+			target = target or coins[1]
+		else
+			local lowest = math.huge
+			for _, coin in ipairs(coins) do
+				local count = occupancy[coin.index] or 0
+				if count < lowest then
+					lowest, target = count, coin
+				end
 			end
 		end
-	end
 
-	table.sort(names)
-	for _, name in ipairs(names) do
-		table.insert(options, name)
-	end
+		occupancy[target.index] = (occupancy[target.index] or 0) + 1
 
-	return options
-end
-
----Send pets to farm one coin.
----@param coin table
----@param petUids string[]
-local function farmCoin(coin, petUids)
-	if flags.teleportToCoin and coin.position then
-		local root = getRoot()
-		if root then
-			root.CFrame = CFrame.new(coin.position + Vector3.new(0, 6, 0))
-		end
-	end
-
-	local joined = invoke("Join Coin", coin.index, petUids)
-	if type(joined) ~= "table" then
-		return
-	end
-
-	for petUid, state in pairs(joined) do
-		if state == true then
-			fire("Farm Coin", coin.index, petUid)
-		end
-	end
-end
-
----Wait until a coin is broken, the timeout passes or farming stops.
----@param coinId string
----@param timeout number
-local function waitForCoinGone(coinId, timeout)
-	local startTime = os.clock()
-
-	while PsxHub.running and flags.autoFarm and coinsFolder:FindFirstChild(coinId) and os.clock() - startTime < timeout do
-		task.wait()
-	end
-end
-
-local farmModes = {}
-
-farmModes["Normal"] = function(pets, coins)
-	for _, coin in ipairs(coins) do
-		if not (PsxHub.running and flags.autoFarm) then
-			return
+		if not groups[target.index] then
+			groups[target.index] = { coin = target, pets = {} }
+			table.insert(groupOrder, target.index)
 		end
 
-		if coinsFolder:FindFirstChild(coin.index) then
-			farmCoin(coin, pets)
-			waitForCoinGone(coin.index, COIN_TIMEOUT)
-		end
-	end
-end
-
-farmModes["Multi Target"] = function(pets, coins)
-	if #coins == 0 then
-		return
+		table.insert(groups[target.index].pets, petUid)
 	end
 
-	local assignments = {}
-	for index, petUid in ipairs(pets) do
-		local coin = coins[(index - 1) % #coins + 1]
-		assignments[coin.index] = assignments[coin.index] or { coin = coin, pets = {} }
-		table.insert(assignments[coin.index].pets, petUid)
-	end
-
-	local pending = 0
-	for _, assignment in pairs(assignments) do
-		pending = pending + 1
+	local pending = #groupOrder
+	for _, coinId in ipairs(groupOrder) do
+		local group = groups[coinId]
 
 		task.spawn(function()
-			farmCoin(assignment.coin, assignment.pets)
-			waitForCoinGone(assignment.coin.index, COIN_TIMEOUT)
+			for _, petUid in ipairs(joinCoin(coinId, group.pets)) do
+				petAssignments[petUid] = coinId
+			end
+
 			pending = pending - 1
 		end)
 	end
 
 	local startTime = os.clock()
-	while pending > 0 and PsxHub.running and flags.autoFarm and os.clock() - startTime < COIN_TIMEOUT + 2 do
+	while pending > 0 and os.clock() - startTime < 5 do
 		task.wait()
 	end
 end
 
-farmModes["Nearest"] = function(pets, coins)
+---Break the selected giant chests. Returns true while a chest is being handled.
+---@param coins table
+---@param pets string[]
+---@return boolean
+local function breakChests(coins, pets)
+	if not flags.autoChests or next(flags.selectedChests) == nil then
+		return false
+	end
+
+	local targets = {}
+	for _, coin in ipairs(coins) do
+		if flags.selectedChests[coin.name] then
+			table.insert(targets, coin)
+		end
+	end
+
+	if #targets == 0 then
+		return false
+	end
+
+	table.sort(targets, function(a, b)
+		return a.distance < b.distance
+	end)
+
+	local target = targets[1]
+	status.farm = ("Giant chest: %s"):format(target.name)
+
+	if target.distance > getCoinRange() then
+		teleportTo(target.position)
+		task.wait(0.4)
+		return true
+	end
+
+	assignPets(pets, { target }, FARM_MODES[1])
+	return true
+end
+
+---Farm the coins of the selected area.
+---@param coins table
+---@param pets string[]
+local function farmCoins(coins, pets)
+	local areaName = flags.farmArea == BEST_AREA and getBestArea() or flags.farmArea
+	local candidates = {}
+
+	for _, coin in ipairs(coins) do
+		local areaMatches = not areaName or coin.area == areaName
+		if areaMatches and not (flags.ignoreGiant and isGiantCoin(coin)) then
+			table.insert(candidates, coin)
+		end
+	end
+
+	-- The area name did not match any coin, so farm everything around instead.
+	if #candidates == 0 then
+		for _, coin in ipairs(coins) do
+			if not (flags.ignoreGiant and isGiantCoin(coin)) then
+				table.insert(candidates, coin)
+			end
+		end
+	end
+
+	if #candidates == 0 then
+		status.farm = "No coins found"
+		return
+	end
+
+	local range = getCoinRange()
+	local inRange = {}
+	for _, coin in ipairs(candidates) do
+		if coin.distance <= range then
+			table.insert(inRange, coin)
+		end
+	end
+
+	-- The server only accepts coins close to the player, so move to the area first.
+	if #inRange == 0 then
+		table.sort(candidates, function(a, b)
+			return a.distance < b.distance
+		end)
+
+		status.farm = ("Moving to %s"):format(tostring(areaName or "coins"))
+		teleportTo(candidates[1].position)
+		task.wait(0.4)
+		return
+	end
+
+	table.sort(inRange, function(a, b)
+		if flags.coinPriority == "Highest Health" then
+			return a.health > b.health
+		elseif flags.coinPriority == "Lowest Health" then
+			return a.health < b.health
+		end
+
+		return a.distance < b.distance
+	end)
+
+	status.farm = ("%s | %d coins in range | %d pets"):format(tostring(areaName or "All"), #inRange, #pets)
+	assignPets(pets, inRange, flags.farmMode)
+end
+
+---Farm step.
+local function farmStep()
+	if not flags.autoFarm and not flags.autoChests then
+		return
+	end
+
+	local root = getRoot()
+	local pets = getEquippedPets()
+
+	if not root or #pets == 0 then
+		status.farm = "No character or no equipped pets"
+		return
+	end
+
+	local coins = {}
+	for _, coin in pairs(coinCache) do
+		if coin.position then
+			coin.distance = (coin.position - root.Position).Magnitude
+			table.insert(coins, coin)
+		end
+	end
+
+	if breakChests(coins, pets) then
+		return
+	end
+
+	if flags.autoFarm then
+		farmCoins(coins, pets)
+	end
+end
+
+---Get the egg models of the current world with their data.
+---@return table
+local function collectEggEntries()
+	local entries = {}
+	local models = safeCall(library.WorldCmds.GetAllEggs)
+
+	for _, model in ipairs(type(models) == "table" and models or {}) do
+		local eggId = model:GetAttribute("ID")
+		local data = eggId and library.Directory.Eggs[eggId]
+
+		if data and data.hatchable ~= false and not data.disabled then
+			table.insert(entries, {
+				id = eggId,
+				data = data,
+				model = model,
+				name = tostring(data.displayName or eggId),
+				unlocked = model:GetAttribute("Unlocked") == true,
+				cost = tonumber(data.cost) or 0,
+			})
+		end
+	end
+
+	return entries
+end
+
+---Resolve the egg the player wants to buy.
+---@param entries table
+---@return table?
+local function resolveEgg(entries)
+	local choice = flags.eggChoice
+	local best = nil
+
+	for _, entry in ipairs(entries) do
+		local matches = false
+
+		if choice == EGG_PRESETS[1] then
+			matches = entry.unlocked
+		elseif choice == EGG_PRESETS[2] then
+			matches = entry.unlocked and not entry.data.isGolden
+		elseif choice == EGG_PRESETS[3] then
+			matches = entry.unlocked and entry.data.isGolden == true
+		else
+			matches = entry.name == choice
+		end
+
+		if matches and (not best or entry.cost > best.cost) then
+			best = entry
+		end
+	end
+
+	return best
+end
+
+---Get how many eggs can be opened at once.
+---@param save table
+---@return number
+local function getMaxEggAmount(save)
+	if flags.eggAmount == EGG_AMOUNTS[2] then
+		return 1
+	elseif flags.eggAmount == EGG_AMOUNTS[3] then
+		return 3
+	elseif flags.eggAmount == EGG_AMOUNTS[4] then
+		return 8
+	end
+
+	if save.OwnsOctupleEggs then
+		return 8
+	end
+
+	local gamepass = safeCall(function()
+		return library.Gamepasses.Owns(library.Directory.Gamepasses["Triple Egg Open"].ID)
+	end)
+
+	return gamepass and 3 or 1
+end
+
+---Count the pets the player owns that come from an egg.
+---@param save table
+---@param eggData table
+---@return number
+local function countEggPets(save, eggData)
+	local drops = eggData.drops
+	if type(drops) == "string" then
+		local source = library.Directory.Eggs[drops]
+		drops = source and source.drops
+	end
+
+	if type(drops) ~= "table" then
+		return 0
+	end
+
+	local ids = {}
+	for _, drop in ipairs(drops) do
+		ids[tostring(drop[1])] = true
+	end
+
+	local total = 0
+	for _, pet in ipairs(save.Pets) do
+		if ids[tostring(pet.id)] then
+			total = total + 1
+		end
+	end
+
+	return total
+end
+
+---Decide if the player should be hatching right now.
+---@param save table
+---@return table?, number
+local function getHatchTarget(save)
+	local entry = resolveEgg(collectEggEntries())
+	if not entry then
+		status.egg = "No egg found for the selection"
+		return nil, 0
+	end
+
+	if flags.saveMoney then
+		local nextArea = getNextArea()
+		if nextArea and countEggPets(save, entry.data) >= flags.keepPets then
+			status.egg = ("Saving money for %s"):format(nextArea)
+			hatchMode = false
+			return nil, 0
+		end
+	end
+
+	local money = getCurrency(save, entry.data.currency)
+	local maxAmount = getMaxEggAmount(save)
+	local amount = 0
+
+	for _, option in ipairs({ 8, 3, 1 }) do
+		if option <= maxAmount and money >= entry.cost * option then
+			amount = option
+			break
+		end
+	end
+
+	-- Keep a buffer before going back to hatching so the player does not bounce between the egg and the area.
+	local needed = hatchMode and entry.cost or entry.cost * math.max(amount, 1) * HATCH_BUFFER
+	if amount == 0 or money < needed then
+		status.egg = ("Waiting for %s (%s)"):format(entry.data.currency, entry.name)
+		hatchMode = false
+		return nil, 0
+	end
+
+	hatchMode = true
+	return entry, amount
+end
+
+---Buy an egg.
+---@param entry table
+---@param amount number
+local function hatchEgg(entry, amount)
+	local root = getRoot()
+	local center = entry.model:FindFirstChild("Center")
+	local position = center and center.Position or entry.model:GetPivot().Position
+
+	-- The server rejects purchases when the player is too far from the egg.
+	if root and (root.Position - position).Magnitude > 20 then
+		root.CFrame = CFrame.new(position + Vector3.new(0, 4, 8))
+		task.wait(0.25)
+	end
+
+	local success, message = invoke("Buy Egg", entry.id, amount == 3, amount == 8)
+	status.egg = success and ("Hatching %s x%d"):format(entry.name, amount) or ("Buy Egg failed: %s"):format(tostring(message))
+
+	if not success then
+		task.wait(1)
+	end
+end
+
+---Main step. Hatching has priority and farming earns the money for it.
+local function mainStep()
+	local save = getSave()
+	if not save or not getRoot() then
+		return
+	end
+
+	if os.clock() - lastResync > RESYNC_INTERVAL then
+		resyncCoins()
+	end
+
+	if flags.autoHatch then
+		local variables = library.Variables
+		if not flags.skipAnimation and (variables.OpeningEgg or 0) > 0 then
+			return
+		end
+
+		local entry, amount = getHatchTarget(save)
+		if entry then
+			hatchEgg(entry, amount)
+			return
+		end
+	else
+		hatchMode = false
+	end
+
+	farmStep()
+end
+
+---Auto collect step. Orbs and lootbags are pulled to the player.
+local function collectStep()
+	if not flags.autoCollect then
+		return
+	end
+
 	local root = getRoot()
 	if not root then
 		return
 	end
 
-	local nearest, nearestDistance = nil, math.huge
-	for _, coin in ipairs(coins) do
-		if coin.position then
-			local distance = (coin.position - root.Position).Magnitude
-			if distance < nearestDistance then
-				nearest, nearestDistance = coin, distance
-			end
-		end
-	end
-
-	if nearest then
-		farmCoin(nearest, pets)
-		waitForCoinGone(nearest.index, COIN_TIMEOUT)
-	end
-end
-
-farmModes["Highest Value"] = function(pets, coins)
-	table.sort(coins, function(a, b)
-		return a.health > b.health
-	end)
-
-	if coins[1] then
-		farmCoin(coins[1], pets)
-		waitForCoinGone(coins[1].index, COIN_TIMEOUT)
-	end
-end
-
-farmModes["Chests"] = function(pets, coins)
-	local chests = {}
-
-	for _, coin in ipairs(coins) do
-		local name = string.lower(coin.name)
-		for _, keyword in ipairs(CHEST_KEYWORDS) do
-			if string.find(name, keyword, 1, true) then
-				table.insert(chests, coin)
-				break
-			end
-		end
-	end
-
-	farmModes["Normal"](pets, chests)
-end
-
----Auto farm step.
-local function farmStep()
-	if not flags.autoFarm then
-		return
-	end
-
-	local pets = getEquippedPets()
-	if #pets == 0 then
-		return
-	end
-
-	local farmMode = farmModes[flags.farmMode] or farmModes["Normal"]
-	farmMode(pets, getCoins(flags.farmArea))
-end
-
----Auto orb step. Orbs are pulled to the player and claimed.
-local function orbStep()
-	if not flags.autoOrbs then
-		return
-	end
-
 	local orbsFolder = library.Things:FindFirstChild("Orbs")
-	local root = getRoot()
-	if not orbsFolder or not root then
-		return
-	end
+	if orbsFolder then
+		local ids = {}
+		for _, orb in ipairs(orbsFolder:GetChildren()) do
+			if orb:IsA("BasePart") then
+				orb.CFrame = root.CFrame
+			end
 
-	local ids = {}
-	for _, orb in ipairs(orbsFolder:GetChildren()) do
-		if orb:IsA("BasePart") then
-			orb.CFrame = root.CFrame
+			table.insert(ids, orb.Name)
 		end
 
-		table.insert(ids, orb.Name)
-	end
-
-	if #ids > 0 then
-		fire("Claim Orbs", ids)
-	end
-end
-
----Auto lootbag step. Lootbags are pulled to the player so the game collects them.
-local function lootbagStep()
-	if not flags.autoLootbags then
-		return
+		if #ids > 0 then
+			fire("Claim Orbs", ids)
+		end
 	end
 
 	local lootbagFolder = library.Things:FindFirstChild("Lootbags")
@@ -410,10 +859,10 @@ local function lootbagStep()
 			task.spawn(function()
 				local startTime = os.clock()
 
-				while PsxHub.running and flags.autoLootbags and lootbag.Parent and os.clock() - startTime < LOOTBAG_TIMEOUT do
-					local root = getRoot()
-					if root then
-						lootbag.CFrame = root.CFrame
+				while PsxHub.running and flags.autoCollect and lootbag.Parent and os.clock() - startTime < LOOTBAG_TIMEOUT do
+					local currentRoot = getRoot()
+					if currentRoot then
+						lootbag.CFrame = currentRoot.CFrame
 					end
 
 					task.wait()
@@ -425,126 +874,56 @@ local function lootbagStep()
 	end
 end
 
----Get the egg models of the current world.
----@return Instance[]
-local function getEggModels()
-	local success, eggs = pcall(library.WorldCmds.GetAllEggs)
-	if success and type(eggs) == "table" then
-		return eggs
+---Replace or restore the egg opening animation.
+---@param enabled boolean
+local function setSkipAnimation(enabled)
+	if not getsenv then
+		return notify("Unsupported", "Your executor has no getsenv.")
 	end
 
-	return {}
-end
+	local playerScripts = localPlayer:FindFirstChild("PlayerScripts")
+	local scriptsFolder = playerScripts and playerScripts:FindFirstChild("Scripts")
+	local gameFolder = scriptsFolder and scriptsFolder:FindFirstChild("Game")
+	local openEggs = gameFolder and gameFolder:FindFirstChild("Open Eggs")
+	local env = openEggs and safeCall(getsenv, openEggs)
 
----Find the egg model with an id.
----@param eggId string
----@return Instance?
-local function findEggModel(eggId)
-	for _, egg in ipairs(getEggModels()) do
-		if egg:GetAttribute("ID") == eggId then
-			return egg
-		end
+	if not env then
+		return notify("Skip Animation", "Could not read the Open Eggs script.")
 	end
 
-	return nil
-end
+	if enabled then
+		originalOpenEgg = originalOpenEgg or env.OpenEgg
 
----Build the egg dropdown entries for the current world.
----@return string[]
-local function buildEggOptions()
-	local entries = {}
-	local seen = {}
-
-	table.clear(eggLookup)
-
-	for _, egg in ipairs(getEggModels()) do
-		local eggId = egg:GetAttribute("ID")
-		local eggData = eggId and library.Directory.Eggs[eggId]
-
-		if eggData and not seen[eggId] then
-			seen[eggId] = true
-			table.insert(entries, {
-				id = eggId,
-				name = tostring(eggData.displayName or eggId),
-				currency = tostring(eggData.currency or "?"),
-				cost = tonumber(eggData.cost) or 0,
-			})
-		end
-	end
-
-	table.sort(entries, function(a, b)
-		if a.currency ~= b.currency then
-			return a.currency < b.currency
+		env.OpenEgg = function(eggId)
+			pcall(library.Signal.Fire, "Opening Egg", eggId)
+			pcall(library.Signal.Fire, "Done Opening Egg", eggId)
 		end
 
-		return a.cost < b.cost
-	end)
-
-	local options = {}
-	for _, entry in ipairs(entries) do
-		local display = ("%s [%s]"):format(entry.name, entry.currency)
-		if eggLookup[display] then
-			display = display .. " (" .. entry.id .. ")"
+		if env.OpenEgg == originalOpenEgg then
+			notify("Skip Animation", "Your executor did not apply the change.")
 		end
-
-		eggLookup[display] = entry.id
-		table.insert(options, display)
+	elseif originalOpenEgg then
+		env.OpenEgg = originalOpenEgg
 	end
-
-	return options
-end
-
----Auto hatch step.
-local function hatchStep()
-	if not flags.autoHatch or not selectedEggId then
-		return
-	end
-
-	local variables = library.Variables
-	if flags.waitAnimation and (variables.OpeningEgg or 0) > 0 then
-		return
-	end
-
-	local root = getRoot()
-	local eggModel = findEggModel(selectedEggId)
-	local center = eggModel and eggModel:FindFirstChild("Center")
-
-	-- The server rejects purchases when the player is too far from the egg.
-	if flags.teleportToEgg and root and center and (root.Position - center.Position).Magnitude > 20 then
-		root.CFrame = CFrame.new(center.Position + Vector3.new(0, 4, 8))
-		task.wait(0.2)
-	end
-
-	local amount = flags.hatchAmount
-	local success, message = invoke("Buy Egg", selectedEggId, amount == 3, amount == 8)
-
-	if not success then
-		warn("[PsxHub] Buy Egg: " .. tostring(message))
-		task.wait(1)
-	end
-end
-
----Get the equipped pet set.
----@return table
-local function getEquippedSet()
-	local set = {}
-	for _, uid in ipairs(getEquippedPets()) do
-		set[uid] = true
-	end
-
-	return set
 end
 
 ---Get the machine rows for an odds table.
 ---@param odds table
 ---@return table?
 local function getMachineRows(odds)
-	local success, rows = pcall(library.RebornBalance.MachineRows, odds, library.Shared.IsHardcore)
-	if success and type(rows) == "table" and #rows > 0 then
+	local rows = safeCall(library.RebornBalance.MachineRows, odds, library.Shared.IsHardcore)
+	if type(rows) == "table" and #rows > 0 then
 		return rows
 	end
 
 	return nil
+end
+
+---Get the kind of a pet.
+---@param pet table
+---@return string
+local function getPetKind(pet)
+	return (pet.r and "Rainbow") or (pet.g and "Gold") or (pet.dm and "DarkMatter") or "Normal"
 end
 
 ---Group the free pets by kind and type so the machines can use them.
@@ -552,7 +931,7 @@ end
 local function getPetGroups()
 	local groups = {}
 	local equipped = getEquippedSet()
-	local save = library.Save.Get()
+	local save = getSave()
 
 	if not save then
 		return groups
@@ -560,10 +939,10 @@ local function getPetGroups()
 
 	for _, pet in ipairs(save.Pets) do
 		local petData = library.Directory.Pets[pet.id]
-		local usable = petData and not petData.huge and not petData.titanic
+		local usable = petData and not PROTECTED_RARITIES[tostring(petData.rarity)]
 
 		if usable and not equipped[pet.uid] and not pet.l then
-			local kind = (pet.r and "Rainbow") or (pet.g and "Gold") or (pet.dm and "DarkMatter") or "Normal"
+			local kind = getPetKind(pet)
 			local key = ("%s:%s:%s:%s"):format(kind, tostring(pet.id), pet.hc and 1 or 0, pet.sh and 1 or 0)
 
 			groups[key] = groups[key] or { kind = kind, id = pet.id, uids = {} }
@@ -574,21 +953,8 @@ local function getPetGroups()
 	return groups
 end
 
----Take the first uids of a group.
----@param uids string[]
----@param count number
----@return string[]
-local function takeUids(uids, count)
-	local taken = {}
-	for index = 1, count do
-		taken[index] = uids[index]
-	end
-
-	return taken
-end
-
 ---Auto golden and rainbow step. Always uses the machine max so the chance is the best one.
-local function combineStep()
+local function machineStep()
 	if not flags.autoGolden and not flags.autoRainbow then
 		return
 	end
@@ -597,7 +963,7 @@ local function combineStep()
 	local rainbowRows = getMachineRows(library.Shared.RainbowMachineOdds)
 
 	for key, group in pairs(getPetGroups()) do
-		if not (PsxHub.running and (flags.autoGolden or flags.autoRainbow)) then
+		if not PsxHub.running then
 			return
 		end
 
@@ -617,13 +983,85 @@ local function combineStep()
 	end
 end
 
+---Auto fuse step. Only fuses normal pets of the selected rarities.
+local function fuseStep()
+	if not flags.autoFuse or next(flags.fuseRarities) == nil then
+		return
+	end
+
+	local save = getSave()
+	if not save then
+		return
+	end
+
+	local minPets = tonumber(library.Shared.FuseMinPets) or 3
+	local maxPets = tonumber(library.Shared.FuseMaxPets) or 12
+	local count = math.clamp(flags.fuseCount, minPets, maxPets)
+	local equipped = getEquippedSet()
+	local groups = {}
+
+	for _, pet in ipairs(save.Pets) do
+		local petData = library.Directory.Pets[pet.id]
+		local selected = petData and flags.fuseRarities[tostring(petData.rarity)]
+
+		if selected and getPetKind(pet) == "Normal" and not equipped[pet.uid] and not pet.l then
+			local key = pet.hc and "hardcore" or "normal"
+			groups[key] = groups[key] or {}
+			table.insert(groups[key], pet.uid)
+		end
+	end
+
+	for key, uids in pairs(groups) do
+		if #uids >= count and not isBlacklisted("fuse:" .. key) then
+			local success = invoke("Fuse Pets", takeUids(uids, count))
+			if not success then
+				blacklistKey("fuse:" .. key)
+			end
+		end
+	end
+end
+
+---Auto equip best pets step.
+local function equipStep()
+	if flags.autoEquipBest then
+		invoke("Equip Best Pets")
+	end
+end
+
+---Keep the server auto delete setting in sync with the selected rarities.
+local function autoDeleteStep()
+	local save = getSave()
+	if not save or type(save.AutoDelete) ~= "table" then
+		return
+	end
+
+	local selected = flags.autoDelete and flags.deleteRarities or {}
+
+	for rarity in pairs(selected) do
+		managedRarities[rarity] = true
+	end
+
+	for rarity in pairs(managedRarities) do
+		local wanted = selected[rarity] == true
+		local current = save.AutoDelete[rarity] == true
+
+		if wanted ~= current then
+			invoke("Toggle Auto Delete", rarity)
+		end
+
+		if not wanted then
+			managedRarities[rarity] = nil
+		end
+	end
+end
+
 ---Auto dark matter step.
 local function darkMatterStep()
 	if flags.autoDarkClaim then
 		invoke("Redeem All Dark Matter Pets")
 	end
 
-	if not flags.autoDarkConvert or flags.darkMatterPet == "" then
+	if not flags.autoDarkConvert or not flags.darkMatterPet or flags.darkMatterPet == "" then
 		return
 	end
 
@@ -650,7 +1088,7 @@ end
 
 ---Show the dark matter queue.
 local function showDarkMatterQueue()
-	local save = library.Save.Get()
+	local save = getSave()
 	local serverTime = invoke("Get OSTime") or os.time()
 	local lines = {}
 
@@ -663,14 +1101,64 @@ local function showDarkMatterQueue()
 	notify("Dark Matter", #lines > 0 and table.concat(lines, "\n") or "Queue is empty.")
 end
 
----Auto rank and vip rewards step.
-local function rewardsStep()
-	if flags.autoRankReward then
-		invoke("Redeem Rank Rewards")
+---Auto unlock next area and teleports step.
+local function areaStep()
+	local save = getSave()
+	if not save then
+		return
 	end
 
-	if flags.autoVipReward then
-		invoke("Redeem VIP Rewards")
+	if flags.autoUnlockArea then
+		local areaName, gate = getNextArea()
+		if areaName and gate and getCurrency(save, gate.currency) >= gate.cost and not isBlacklisted("area:" .. areaName) then
+			local success, message = invoke("Buy Area", areaName)
+			status.progress = success and ("Unlocked %s"):format(areaName) or ("Buy Area %s: %s"):format(areaName, tostring(message))
+
+			if not success then
+				blacklistKey("area:" .. areaName)
+			end
+		end
+	end
+
+	if flags.autoBuyTeleports then
+		for _, area in ipairs(getWorldAreas()) do
+			local price = tonumber(area.data.teleportPrice)
+			local owned = safeCall(library.WorldCmds.HasTeleport, area.name) == true
+
+			if price and hasArea(area.name) and not owned and getCurrency(save, "Diamonds") >= price and not isBlacklisted("teleport:" .. area.name) then
+				local success = invoke("Buy Teleport Area", area.name)
+				if not success then
+					blacklistKey("teleport:" .. area.name)
+				end
+			end
+		end
+	end
+end
+
+---Auto upgrade step.
+local function upgradeStep()
+	if not flags.autoUpgrades then
+		return
+	end
+
+	local save = getSave()
+	if not save then
+		return
+	end
+
+	for upgradeId in pairs(flags.selectedUpgrades) do
+		local data = library.Directory.Upgrades[upgradeId]
+		local level = save.Upgrades and tonumber(save.Upgrades[upgradeId]) or 0
+		local price = data and data.prices and data.prices[level + 1]
+
+		if price and getCurrency(save, data.currency) >= price and not isBlacklisted("upgrade:" .. upgradeId) then
+			local success = invoke("Buy Upgrade", upgradeId)
+			if not success then
+				blacklistKey("upgrade:" .. upgradeId)
+			end
+
+			return
+		end
 	end
 end
 
@@ -687,7 +1175,11 @@ end
 
 ---Auto boost step. Only activates a boost that is not already running.
 local function boostStep()
-	local save = library.Save.Get()
+	if not flags.autoUseBoosts then
+		return
+	end
+
+	local save = getSave()
 	if not save then
 		return
 	end
@@ -703,10 +1195,31 @@ local function boostStep()
 	end
 end
 
----Auto equip best pets step.
-local function equipStep()
-	if flags.autoEquipBest then
-		invoke("Equip Best Pets")
+---Auto rewards step.
+local function rewardsStep()
+	if flags.autoRankReward then
+		invoke("Redeem Rank Rewards")
+	end
+
+	if flags.autoVipReward then
+		invoke("Redeem VIP Rewards")
+	end
+
+	if flags.autoFreeGifts then
+		local save = getSave()
+		for index, gift in ipairs(library.Directory.FreeGifts or {}) do
+			local redeemed = false
+			for _, done in ipairs(save and save.FreeGiftsRedeemed or {}) do
+				redeemed = redeemed or done == index
+			end
+
+			if save and not redeemed and save.FreeGiftsTime >= gift.waitTime and not isBlacklisted("gift:" .. index) then
+				local success = invoke("Redeem Free Gift", index)
+				if not success then
+					blacklistKey("gift:" .. index)
+				end
+			end
+		end
 	end
 end
 
@@ -756,6 +1269,71 @@ local function applyAntiLag()
 	end
 end
 
+---Update the labels of the home tab.
+local function homeStep()
+	local save = getSave()
+	local nextArea, gate = getNextArea()
+	local coinCount = 0
+	for _ in pairs(coinCache) do
+		coinCount = coinCount + 1
+	end
+
+	local lines = {
+		world = ("World: %s | Best area: %s"):format(tostring(getWorldName()), tostring(getBestArea())),
+		next = nextArea and ("Next area: %s (%s %s)"):format(nextArea, tostring(gate.cost), tostring(gate.currency)) or "Next area: none",
+		farm = ("Farm: %s | Coins: %d"):format(status.farm or "idle", coinCount),
+		egg = ("Egg: %s"):format(status.egg or "idle"),
+		progress = ("Progress: %s | Pets equipped: %d"):format(status.progress or "idle", #getEquippedPets()),
+	}
+
+	for key, text in pairs(lines) do
+		if homeLabels[key] then
+			pcall(homeLabels[key].Set, homeLabels[key], text)
+		end
+	end
+
+	return save
+end
+
+---Run a check of everything the script depends on and copy the report.
+local function runDiagnostics()
+	local lines = {}
+	local save = getSave()
+	local root = getRoot()
+	local entries = collectEggEntries()
+	local egg = resolveEgg(entries)
+	local nearest, inRange, total = math.huge, 0, 0
+
+	for _, coin in pairs(coinCache) do
+		total = total + 1
+		if root and coin.position then
+			local distance = (coin.position - root.Position).Magnitude
+			nearest = math.min(nearest, distance)
+			inRange = inRange + (distance <= getCoinRange() and 1 or 0)
+		end
+	end
+
+	table.insert(lines, ("Save: %s | World: %s"):format(save and "ok" or "MISSING", tostring(getWorldName())))
+	table.insert(lines, ("Equipped pets: %d"):format(#getEquippedPets()))
+	table.insert(lines, ("Coins: %d | in range: %d | nearest: %s"):format(total, inRange, nearest == math.huge and "-" or tostring(math.floor(nearest))))
+	table.insert(lines, ("Best area: %s | Next area: %s"):format(tostring(getBestArea()), tostring((getNextArea()))))
+	table.insert(lines, ("Eggs: %d | selected: %s"):format(#entries, egg and egg.name or "none"))
+	table.insert(lines, ("getsenv: %s | getgc: %s | setfpscap: %s"):format(tostring(getsenv ~= nil), tostring(getgc ~= nil), tostring(setfpscap ~= nil)))
+
+	for key, text in pairs(status) do
+		table.insert(lines, key .. ": " .. tostring(text))
+	end
+
+	local report = table.concat(lines, "\n")
+	print(report)
+
+	if setclipboard then
+		pcall(setclipboard, report)
+	end
+
+	notify("Self-Test (copied to clipboard)", report)
+end
+
 ---Spawn a loop that runs a step while the hub is alive.
 ---@param name string
 ---@param interval number|function
@@ -765,6 +1343,7 @@ local function startLoop(name, interval, step)
 		while PsxHub.running do
 			local success, result = pcall(step)
 			if not success then
+				status.error = ("%s: %s"):format(name, tostring(result))
 				warn(("[PsxHub] %s: %s"):format(name, tostring(result)))
 				task.wait(5)
 			end
@@ -780,10 +1359,11 @@ function PsxHub.detach()
 	PsxHub.running = false
 
 	for _, connection in ipairs(PsxHub.connections) do
-		connection:Disconnect()
+		pcall(connection.Disconnect, connection)
 	end
 	table.clear(PsxHub.connections)
 
+	pcall(setSkipAnimation, false)
 	pcall(runService.Set3dRenderingEnabled, runService, true)
 
 	if PsxHub.rayfield then
@@ -863,11 +1443,139 @@ local function addDropdown(tab, name, flagName, options, default, onChange)
 	})
 end
 
+---Create a multiple option dropdown.
+---@param tab table
+---@param name string
+---@param flagName string
+---@param options string[]
+---@param onChange function
+---@return table
+local function addMultiDropdown(tab, name, flagName, options, onChange)
+	return tab:CreateDropdown({
+		Name = name,
+		Options = options,
+		CurrentOption = {},
+		MultipleOptions = true,
+		Flag = flagName,
+		Callback = function(selected)
+			onChange(toSet(selected))
+		end,
+	})
+end
+
+---Build the area dropdown options for the current world.
+---@return string[]
+local function buildAreaOptions()
+	local options = { BEST_AREA }
+	table.clear(areaLookup)
+
+	for _, area in ipairs(getWorldAreas()) do
+		if hasArea(area.name) then
+			local display = tostring(area.data.name or area.name)
+			areaLookup[display] = area.name
+			table.insert(options, display)
+		end
+	end
+
+	return options
+end
+
+---Build the egg dropdown options for the current world.
+---@return string[]
+local function buildEggOptions()
+	local options = { EGG_PRESETS[1], EGG_PRESETS[2], EGG_PRESETS[3] }
+	local entries = collectEggEntries()
+	local seen = {}
+
+	table.sort(entries, function(a, b)
+		return a.cost < b.cost
+	end)
+
+	for _, entry in ipairs(entries) do
+		if not seen[entry.name] then
+			seen[entry.name] = true
+			table.insert(options, entry.name)
+		end
+	end
+
+	return options
+end
+
+---Build the giant chest options from the coins around.
+---@return string[]
+local function buildChestOptions()
+	local options, seen = {}, {}
+
+	local function add(name)
+		if not seen[name] then
+			seen[name] = true
+			table.insert(options, name)
+		end
+	end
+
+	for _, name in ipairs(DEFAULT_CHESTS) do
+		add(name)
+	end
+
+	for _, coin in pairs(coinCache) do
+		if isGiantCoin(coin) then
+			add(coin.name)
+		end
+	end
+
+	table.sort(options)
+	return options
+end
+
+---Build the upgrade options.
+---@return string[]
+local function buildUpgradeOptions()
+	local options = {}
+	table.clear(upgradeLookup)
+
+	for upgradeId, data in pairs(library.Directory.Upgrades) do
+		if type(data) == "table" and not (data.isHalloweenEvent or data.isLuckyBlockEvent or data.isYeetEvent) then
+			local display = tostring(data.title or upgradeId)
+			upgradeLookup[display] = upgradeId
+			table.insert(options, display)
+		end
+	end
+
+	table.sort(options)
+	return options
+end
+
+---Build the pet rarity options.
+---@return string[]
+local function buildRarityOptions()
+	local options, seen = {}, {}
+	local numbers = safeCall(function()
+		return library.Shared.PetRarityNumbers
+	end)
+
+	if type(numbers) == "table" then
+		for rarity in pairs(numbers) do
+			seen[rarity] = true
+			table.insert(options, tostring(rarity))
+		end
+	else
+		for _, data in pairs(library.Directory.Pets) do
+			local rarity = type(data) == "table" and data.rarity
+			if rarity and not seen[rarity] then
+				seen[rarity] = true
+				table.insert(options, tostring(rarity))
+			end
+		end
+	end
+
+	table.sort(options)
+	return options
+end
+
 ---Collect the boost names the player can activate.
 ---@return string[]
-local function collectBoostOptions()
-	local options = {}
-	local seen = {}
+local function buildBoostOptions()
+	local options, seen = {}, {}
 
 	local function add(name)
 		if not seen[name] then
@@ -880,13 +1588,26 @@ local function collectBoostOptions()
 		add(name)
 	end
 
-	local save = library.Save.Get()
+	local save = getSave()
 	for name in pairs(save and save.BoostsInventory or {}) do
 		add(tostring(name))
 	end
 
 	table.sort(options)
 	return options
+end
+
+---Convert selected display names to ids.
+---@param lookup table
+---@param selected table
+---@return table
+local function mapSelection(lookup, selected)
+	local ids = {}
+	for display in pairs(selected) do
+		ids[lookup[display] or display] = true
+	end
+
+	return ids
 end
 
 ---Build the Rayfield interface.
@@ -903,60 +1624,78 @@ local function buildInterface()
 		KeySystem = false,
 	})
 
-	-- Farm tab.
-	local farmTab = window:CreateTab("Farm", TAB_ICON)
-	addToggle(farmTab, "Auto Farm", "autoFarm", false)
-	addDropdown(farmTab, "Farm Mode", "farmModeOption", FARM_MODES, "Normal", function(value)
+	-- Home tab.
+	local homeTab = window:CreateTab("Home", TAB_ICON)
+	homeTab:CreateSection("Status")
+	homeLabels.world = homeTab:CreateLabel("World: ...")
+	homeLabels.next = homeTab:CreateLabel("Next area: ...")
+	homeLabels.farm = homeTab:CreateLabel("Farm: idle")
+	homeLabels.egg = homeTab:CreateLabel("Egg: idle")
+	homeLabels.progress = homeTab:CreateLabel("Progress: idle")
+	homeTab:CreateButton({ Name = "Run Self-Test (copies report)", Callback = runDiagnostics })
+
+	-- Auto Farm tab.
+	local farmTab = window:CreateTab("Auto Farm", TAB_ICON)
+	farmTab:CreateSection("Coins")
+	areaDropdown = addDropdown(farmTab, "Select Area to Farm", "farmAreaOption", buildAreaOptions(), BEST_AREA, function(value)
+		flags.farmArea = areaLookup[value] or BEST_AREA
+	end)
+	addDropdown(farmTab, "Select Farming Mode", "farmModeOption", FARM_MODES, FARM_MODES[2], function(value)
 		flags.farmMode = value
 	end)
-	areaDropdown = addDropdown(farmTab, "Farm Area", "farmAreaOption", collectAreaOptions(), "All", function(value)
-		flags.farmArea = value
+	addDropdown(farmTab, "Select Coin Priority", "coinPriorityOption", COIN_PRIORITIES, COIN_PRIORITIES[1], function(value)
+		flags.coinPriority = value
+	end)
+	addToggle(farmTab, "Ignore Giant Chests", "ignoreGiant", false)
+	addToggle(farmTab, "Auto Farm Coins", "autoFarm", false)
+	farmTab:CreateSection("Giant Chests")
+	chestDropdown = addMultiDropdown(farmTab, "Select Giant Chests", "chestOptions", buildChestOptions(), function(selected)
+		flags.selectedChests = selected
 	end)
 	farmTab:CreateButton({
-		Name = "Refresh Areas",
+		Name = "Refresh Areas and Chests",
 		Callback = function()
-			pcall(areaDropdown.Refresh, areaDropdown, collectAreaOptions())
+			pcall(areaDropdown.Refresh, areaDropdown, buildAreaOptions())
+			pcall(chestDropdown.Refresh, chestDropdown, buildChestOptions())
 		end,
 	})
-	addToggle(farmTab, "Teleport To Coin (use if pets do not hit)", "teleportToCoin", false)
-	addSlider(farmTab, "Delay Between Rounds", "farmDelay", { 0.1, 5 }, 0.1, 0.5)
-	addToggle(farmTab, "Auto Collect Orbs", "autoOrbs", false)
-	addToggle(farmTab, "Auto Collect Lootbags", "autoLootbags", false)
-	addToggle(farmTab, "Auto Equip Best Pets (every 30s)", "autoEquipBest", false)
-	farmTab:CreateButton({
-		Name = "Equip Best Pets",
-		Callback = function()
-			invoke("Equip Best Pets")
-		end,
-	})
+	addToggle(farmTab, "Auto Break Selected Giant Chests", "autoChests", false)
+	farmTab:CreateSection("Orbs/Lootbags")
+	addToggle(farmTab, "Auto Collect Orbs/Lootbags", "autoCollect", false)
 
-	-- Eggs tab.
-	local eggTab = window:CreateTab("Eggs", TAB_ICON)
-	local eggOptions = buildEggOptions()
-	selectedEggId = eggLookup[eggOptions[1]]
-	eggDropdown = addDropdown(eggTab, "Egg (current world)", "eggOption", eggOptions, eggOptions[1] or "", function(value)
-		selectedEggId = eggLookup[value]
+	-- Egg tab.
+	local eggTab = window:CreateTab("Egg", TAB_ICON)
+	eggTab:CreateSection("Eggs")
+	eggDropdown = addDropdown(eggTab, "Select Egg to Buy", "eggOption", buildEggOptions(), EGG_PRESETS[2], function(value)
+		flags.eggChoice = value
 	end)
 	eggTab:CreateButton({
 		Name = "Refresh Eggs",
 		Callback = function()
-			local options = buildEggOptions()
-			selectedEggId = eggLookup[options[1]]
-			pcall(eggDropdown.Refresh, eggDropdown, options)
+			pcall(eggDropdown.Refresh, eggDropdown, buildEggOptions())
 		end,
 	})
-	addDropdown(eggTab, "Hatch Amount (3 and 8 need the pass)", "hatchAmountOption", HATCH_AMOUNTS, "1", function(value)
-		flags.hatchAmount = tonumber(value) or 1
+	addDropdown(eggTab, "Select Eggs per Open", "eggAmountOption", EGG_AMOUNTS, EGG_AMOUNTS[1], function(value)
+		flags.eggAmount = value
 	end)
-	addToggle(eggTab, "Teleport To Egg (server checks distance)", "teleportToEgg", true)
-	addToggle(eggTab, "Wait For Animation", "waitAnimation", true)
-	addToggle(eggTab, "Auto Hatch", "autoHatch", false)
+	eggTab:CreateLabel("Save Money: only buys eggs until you own the selected amount of pets from that egg, then farms to unlock the next area.")
+	addSlider(eggTab, "Select Pets to Keep from the Egg", "keepPets", { 1, 50 }, 1, 4)
+	addToggle(eggTab, "Save Money for Area Unlock", "saveMoney", false)
+	addToggle(eggTab, "Auto Buy Selected Egg", "autoHatch", false)
+	addToggle(eggTab, "Skip Egg Opening Animation", "skipAnimation", false, setSkipAnimation)
+	eggTab:CreateSection("Auto Delete")
+	addMultiDropdown(eggTab, "Select Rarities to Delete", "deleteOptions", buildRarityOptions(), function(selected)
+		flags.deleteRarities = selected
+	end)
+	addToggle(eggTab, "Auto Delete Selected Rarities", "autoDelete", false)
 
-	-- Pets tab.
-	local petTab = window:CreateTab("Pets", TAB_ICON)
-	petTab:CreateSection("Machines cost Diamonds. Uses the max pets for the best chance.")
-	addToggle(petTab, "Auto Golden", "autoGolden", false)
-	addToggle(petTab, "Auto Rainbow", "autoRainbow", false)
+	-- Pet tab.
+	local petTab = window:CreateTab("Pet", TAB_ICON)
+	petTab:CreateSection("Pets")
+	addToggle(petTab, "Auto Equip Best Pets", "autoEquipBest", false)
+	petTab:CreateSection("Golden and Rainbow Machines (cost Diamonds, max pets)")
+	addToggle(petTab, "Auto Make Golden Pets", "autoGolden", false)
+	addToggle(petTab, "Auto Make Rainbow Pets", "autoRainbow", false)
 	petTab:CreateSection("Dark Matter")
 	petTab:CreateInput({
 		Name = "Pet Name",
@@ -966,37 +1705,45 @@ local function buildInterface()
 			flags.darkMatterPet = text
 		end,
 	})
-	addToggle(petTab, "Auto Convert", "autoDarkConvert", false)
-	addToggle(petTab, "Auto Claim", "autoDarkClaim", false)
-	petTab:CreateButton({ Name = "Show Queue", Callback = showDarkMatterQueue })
+	addToggle(petTab, "Auto Convert to Dark Matter", "autoDarkConvert", false)
+	addToggle(petTab, "Auto Claim Dark Matter", "autoDarkClaim", false)
+	petTab:CreateButton({ Name = "Show Dark Matter Queue", Callback = showDarkMatterQueue })
+	petTab:CreateSection("Fuse Pets (normal pets of the selected rarities)")
+	addMultiDropdown(petTab, "Select Rarities to Fuse", "fuseOptions", buildRarityOptions(), function(selected)
+		flags.fuseRarities = selected
+	end)
+	addSlider(petTab, "Select Pets per Fuse", "fuseCount", { 3, 12 }, 1, 12)
+	addToggle(petTab, "Auto Fuse Pets", "autoFuse", false)
 
-	-- Auto tab.
-	local autoTab = window:CreateTab("Auto", TAB_ICON)
-	addToggle(autoTab, "Rank Rewards", "autoRankReward", false)
-	addToggle(autoTab, "VIP Rewards", "autoVipReward", false)
-	autoTab:CreateDropdown({
-		Name = "Auto Boosts (only when not running)",
-		Options = collectBoostOptions(),
-		CurrentOption = {},
-		MultipleOptions = true,
-		Flag = "autoBoostOptions",
-		Callback = function(options)
-			flags.autoBoosts = {}
-			for _, name in ipairs(type(options) == "table" and options or { options }) do
-				flags.autoBoosts[name] = true
-			end
-		end,
-	})
-	autoTab:CreateSection("Merchant spends Diamonds")
-	addToggle(autoTab, "Buy All Merchant Items", "autoMerchant", false)
+	-- Progression tab.
+	local progressTab = window:CreateTab("Progression", TAB_ICON)
+	progressTab:CreateSection("Areas")
+	addToggle(progressTab, "Auto Unlock Next Area", "autoUnlockArea", false)
+	addToggle(progressTab, "Auto Buy Area Teleports", "autoBuyTeleports", false)
+	progressTab:CreateSection("Upgrades")
+	addMultiDropdown(progressTab, "Select Upgrades to Buy", "upgradeOptions", buildUpgradeOptions(), function(selected)
+		flags.selectedUpgrades = mapSelection(upgradeLookup, selected)
+	end)
+	addToggle(progressTab, "Auto Buy Selected Upgrades", "autoUpgrades", false)
+	progressTab:CreateSection("Boosts")
+	addMultiDropdown(progressTab, "Select Boosts to Use", "boostOptions", buildBoostOptions(), function(selected)
+		flags.autoBoosts = selected
+	end)
+	addToggle(progressTab, "Auto Use Selected Boosts", "autoUseBoosts", false)
+	progressTab:CreateSection("Rewards")
+	addToggle(progressTab, "Auto Rank Rewards", "autoRankReward", false)
+	addToggle(progressTab, "Auto VIP Rewards", "autoVipReward", false)
+	addToggle(progressTab, "Auto Free Gifts", "autoFreeGifts", false)
+	addToggle(progressTab, "Auto Buy Merchant Items (spends Diamonds)", "autoMerchant", false)
 
-	-- Misc tab.
-	local miscTab = window:CreateTab("Misc", TAB_ICON)
-	addToggle(miscTab, "Anti AFK", "antiAfk", true)
-	addToggle(miscTab, "Disable 3D Rendering", "noRendering", false, function(value)
+	-- Main tab.
+	local mainTab = window:CreateTab("Main", TAB_ICON)
+	mainTab:CreateSection("Utility")
+	addToggle(mainTab, "Anti AFK", "antiAfk", true)
+	addToggle(mainTab, "Disable 3D Rendering", "noRendering", false, function(value)
 		runService:Set3dRenderingEnabled(not value)
 	end)
-	miscTab:CreateSlider({
+	mainTab:CreateSlider({
 		Name = "FPS Cap",
 		Range = { 10, 360 },
 		Increment = 5,
@@ -1009,14 +1756,14 @@ local function buildInterface()
 			end
 		end,
 	})
-	miscTab:CreateButton({ Name = "Anti Lag", Callback = applyAntiLag })
-	miscTab:CreateButton({
+	mainTab:CreateButton({ Name = "Anti Lag", Callback = applyAntiLag })
+	mainTab:CreateButton({
 		Name = "Rejoin",
 		Callback = function()
 			teleportService:Teleport(game.PlaceId, localPlayer)
 		end,
 	})
-	miscTab:CreateButton({
+	mainTab:CreateButton({
 		Name = "Copy Discord",
 		Callback = function()
 			if setclipboard then
@@ -1026,14 +1773,39 @@ local function buildInterface()
 			notify("Discord", DISCORD_URL)
 		end,
 	})
-	miscTab:CreateButton({ Name = "Destroy UI", Callback = PsxHub.detach })
+	mainTab:CreateButton({ Name = "Destroy UI", Callback = PsxHub.detach })
 end
 
 ---Initialize the script.
 local function initializeScript()
 	library = resolveLibrary()
 	network = library.Network
-	coinsFolder = library.Things:WaitForChild("Coins")
+
+	resyncCoins()
+	connectEvent("Add Coin", function(coinId, data)
+		if type(data) == "table" then
+			coinCache[tostring(coinId)] = normalizeCoin(coinId, data)
+		end
+	end)
+	connectEvent("Remove Coin", function(coinId)
+		coinCache[tostring(coinId)] = nil
+	end)
+	connectEvent("Update Coin Health", function(coinId, health)
+		local coin = coinCache[tostring(coinId)]
+		if coin then
+			coin.health = tonumber(health) or coin.health
+		end
+	end)
+
+	-- The coins of the previous world are gone, so load the new ones.
+	local worldSignal = safeCall(library.Signal.Fired, "World Changed")
+	local worldConnection = worldSignal and safeCall(worldSignal.Connect, worldSignal, function()
+		table.clear(petAssignments)
+		task.delay(1.5, resyncCoins)
+	end)
+	if worldConnection then
+		table.insert(PsxHub.connections, worldConnection)
+	end
 
 	-- Keep the character from being kicked for idling.
 	table.insert(
@@ -1051,18 +1823,21 @@ local function initializeScript()
 
 	buildInterface()
 
-	startLoop("Farm", function()
-		return flags.farmDelay
-	end, farmStep)
-	startLoop("Orbs", 0.3, orbStep)
-	startLoop("Lootbags", 0.5, lootbagStep)
-	startLoop("Hatch", 0.2, hatchStep)
-	startLoop("Combine", 2, combineStep)
+	startLoop("Main", function()
+		return hatchMode and 0.2 or flags.farmDelay
+	end, mainStep)
+	startLoop("Collect", 0.3, collectStep)
+	startLoop("Machines", 2, machineStep)
+	startLoop("Fuse", 3, fuseStep)
+	startLoop("AutoDelete", 3, autoDeleteStep)
 	startLoop("DarkMatter", 15, darkMatterStep)
-	startLoop("Rewards", 10, rewardsStep)
-	startLoop("Boosts", 5, boostStep)
 	startLoop("Equip", 30, equipStep)
+	startLoop("Areas", 2, areaStep)
+	startLoop("Upgrades", 2, upgradeStep)
+	startLoop("Boosts", 5, boostStep)
+	startLoop("Rewards", 10, rewardsStep)
 	startLoop("Merchant", 2, merchantStep)
+	startLoop("Home", 1, homeStep)
 
 	PsxHub.rayfield:LoadConfiguration()
 	notify("Byte", "Loaded. " .. DISCORD_URL)
