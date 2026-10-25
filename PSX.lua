@@ -31,6 +31,10 @@ local EGG_AMOUNTS = { "Best Available", "1 Egg", "3 Eggs", "8 Eggs" }
 local DEFAULT_BOOSTS = { "Triple Coins", "Triple Damage" }
 local DEFAULT_CHESTS = { "Giant Tech Chest", "Giant Steampunk Chest", "Giant Rainbow Chest" }
 local PROTECTED_RARITIES = { Huge = true, Titanic = true }
+local FUSABLE_RARITIES = { "Basic", "Rare", "Epic", "Legendary" }
+local FUSE_BLOCKED = { Event = true, Exclusive = true, Secret = true, Mythical = true }
+local SELECT_GRACE = 4
+local DAMAGE_GRACE = 3
 
 -- State.
 local localPlayer = playersService.LocalPlayer
@@ -39,7 +43,11 @@ local flags = PsxHub.flags
 local status = PsxHub.status
 local library, network
 local coinCache = {}
-local petAssignments = {}
+local selections = {}
+local failedCoins = {}
+local lastAck = {}
+local originalPetsControl = nil
+local lastMode = nil
 local blacklist = {}
 local boostCooldowns = {}
 local runningLootbags = {}
@@ -337,6 +345,7 @@ local function normalizeCoin(id, data)
 		health = tonumber(data.h) or 0,
 		position = typeof(data.p) == "Vector3" and data.p or nil,
 		distance = math.huge,
+		lastDamage = 0,
 	}
 end
 
@@ -396,106 +405,96 @@ local function isGiantCoin(coin)
 	return string.find(string.lower(coin.name), "giant", 1, true) ~= nil
 end
 
----Send pets to farm one coin. Returns the pets that joined.
+---Get the model the game uses for a coin.
 ---@param coinId string
----@param petUids string[]
----@return string[]
-local function joinCoin(coinId, petUids)
-	local joined = {}
-	local result = invoke("Join Coin", coinId, petUids)
-
-	if type(result) ~= "table" then
-		return joined
-	end
-
-	for petUid, state in pairs(result) do
-		if state == true then
-			table.insert(joined, petUid)
-			fire("Farm Coin", coinId, petUid)
-		end
-	end
-
-	return joined
+---@return Instance?
+local function getCoinModel(coinId)
+	local coinsFolder = library.Things:FindFirstChild("Coins")
+	return coinsFolder and coinsFolder:FindFirstChild(coinId)
 end
 
----Give every pet without a coin one, following the farming mode.
----@param pets string[]
----@param coins table
----@param mode string
-local function assignPets(pets, coins, mode)
-	local occupancy, needy = {}, {}
-
-	for _, petUid in ipairs(pets) do
-		local coinId = petAssignments[petUid]
-		if coinId and coinCache[coinId] then
-			occupancy[coinId] = (occupancy[coinId] or 0) + 1
-		else
-			petAssignments[petUid] = nil
-			table.insert(needy, petUid)
-		end
+---Check if pets are attacking a coin we selected. Damage events are the proof.
+---@param coin table
+---@return boolean
+local function isActive(coin)
+	local selection = selections[coin.index]
+	if not selection then
+		return false
 	end
 
-	if #needy == 0 or #coins == 0 then
-		return
+	local now = os.clock()
+	return now - selection.time < SELECT_GRACE or now - coin.lastDamage < DAMAGE_GRACE
+end
+
+---Check if a coin was refused recently.
+---@param coin table
+---@return boolean
+local function isFailed(coin)
+	return (failedCoins[coin.index] or 0) > os.clock()
+end
+
+---Make single selections pick one pet instead of the whole group.
+local function ensureSinglePetControl()
+	local save = getSave()
+	local settings = save and save.Settings
+
+	if type(settings) == "table" and settings.PetsControl == 2 then
+		originalPetsControl = originalPetsControl or settings.PetsControl
+		settings.PetsControl = 1
+	end
+end
+
+---Restore the pets control setting.
+local function restorePetsControl()
+	local save = getSave()
+	local settings = save and save.Settings
+
+	if originalPetsControl and type(settings) == "table" then
+		settings.PetsControl = originalPetsControl
 	end
 
-	local groups, groupOrder = {}, {}
-	for _, petUid in ipairs(needy) do
-		local target = nil
+	originalPetsControl = nil
+end
 
-		if mode == FARM_MODES[1] then
-			for _, coin in ipairs(coins) do
-				if (occupancy[coin.index] or 0) > 0 then
-					target = coin
-					break
-				end
-			end
-
-			target = target or coins[1]
-		else
-			local lowest = math.huge
-			for _, coin in ipairs(coins) do
-				local count = occupancy[coin.index] or 0
-				if count < lowest then
-					lowest, target = count, coin
-				end
-			end
-		end
-
-		occupancy[target.index] = (occupancy[target.index] or 0) + 1
-
-		if not groups[target.index] then
-			groups[target.index] = { coin = target, pets = {} }
-			table.insert(groupOrder, target.index)
-		end
-
-		table.insert(groups[target.index].pets, petUid)
+---Select a coin exactly like a tap does and wait for the server answer.
+---The game then sends the pets and fires Farm Coin when they arrive.
+---@param coin table
+---@param allPets boolean
+---@return boolean
+local function selectCoin(coin, allPets)
+	local model = getCoinModel(coin.index)
+	if not model then
+		failedCoins[coin.index] = os.clock() + 3
+		return false
 	end
 
-	local pending = #groupOrder
-	for _, coinId in ipairs(groupOrder) do
-		local group = groups[coinId]
-
-		task.spawn(function()
-			for _, petUid in ipairs(joinCoin(coinId, group.pets)) do
-				petAssignments[petUid] = coinId
-			end
-
-			pending = pending - 1
-		end)
+	local before = lastAck[coin.index]
+	local eventName = allPets and "Group Select Coin" or "Select Coin"
+	if not pcall(library.Signal.Fire, eventName, model) then
+		status.farm = "Signal.Fire failed"
+		return false
 	end
 
 	local startTime = os.clock()
-	while pending > 0 and os.clock() - startTime < 5 do
+	while PsxHub.running and os.clock() - startTime < 1.5 do
+		if lastAck[coin.index] ~= before then
+			selections[coin.index] = { time = os.clock() }
+			return true
+		end
+
 		task.wait()
 	end
+
+	-- The server refused (the coin is too far or already gone).
+	failedCoins[coin.index] = os.clock() + 5
+	status.farm = ("Join Coin refused: %s"):format(coin.name)
+	return false
 end
 
 ---Break the selected giant chests. Returns true while a chest is being handled.
 ---@param coins table
----@param pets string[]
 ---@return boolean
-local function breakChests(coins, pets)
+local function breakChests(coins)
 	if not flags.autoChests or next(flags.selectedChests) == nil then
 		return false
 	end
@@ -524,7 +523,10 @@ local function breakChests(coins, pets)
 		return true
 	end
 
-	assignPets(pets, { target }, FARM_MODES[1])
+	if not isActive(target) and not isFailed(target) then
+		selectCoin(target, true)
+	end
+
 	return true
 end
 
@@ -586,8 +588,44 @@ local function farmCoins(coins, pets)
 		return a.distance < b.distance
 	end)
 
-	status.farm = ("%s | %d coins in range | %d pets"):format(tostring(areaName or "All"), #inRange, #pets)
-	assignPets(pets, inRange, flags.farmMode)
+	if lastMode ~= flags.farmMode then
+		lastMode = flags.farmMode
+		table.clear(selections)
+	end
+
+	local active = 0
+	for _, coin in pairs(coinCache) do
+		if isActive(coin) then
+			active = active + 1
+		end
+	end
+
+	status.farm = ("%s | in range %d | attacking %d | pets %d"):format(tostring(areaName or "All"), #inRange, active, #pets)
+
+	if flags.farmMode == FARM_MODES[1] then
+		if active == 0 then
+			for _, coin in ipairs(inRange) do
+				if not isFailed(coin) and selectCoin(coin, true) then
+					break
+				end
+			end
+		end
+
+		return
+	end
+
+	ensureSinglePetControl()
+
+	local needed = #pets - active
+	for _, coin in ipairs(inRange) do
+		if needed <= 0 or not PsxHub.running then
+			break
+		end
+
+		if not isActive(coin) and not isFailed(coin) and selectCoin(coin, false) then
+			needed = needed - 1
+		end
+	end
 end
 
 ---Farm step.
@@ -612,7 +650,7 @@ local function farmStep()
 		end
 	end
 
-	if breakChests(coins, pets) then
+	if breakChests(coins) then
 		return
 	end
 
@@ -975,7 +1013,9 @@ local function machineStep()
 		end
 
 		if remote and rows and #group.uids >= #rows and not isBlacklisted(key) then
-			local success = invoke(remote, takeUids(group.uids, #rows))
+			local success, message = invoke(remote, takeUids(group.uids, #rows))
+			status.machine = success and (remote .. " ok") or (remote .. ": " .. tostring(message))
+
 			if not success then
 				blacklistKey(key)
 			end
@@ -983,9 +1023,9 @@ local function machineStep()
 	end
 end
 
----Auto fuse step. Only fuses normal pets of the selected rarities.
+---Auto fuse step. Fuses normal pets of the selected rarities (Basic when nothing is selected).
 local function fuseStep()
-	if not flags.autoFuse or next(flags.fuseRarities) == nil then
+	if not flags.autoFuse then
 		return
 	end
 
@@ -994,6 +1034,7 @@ local function fuseStep()
 		return
 	end
 
+	local selected = next(flags.fuseRarities) ~= nil and flags.fuseRarities or { Basic = true }
 	local minPets = tonumber(library.Shared.FuseMinPets) or 3
 	local maxPets = tonumber(library.Shared.FuseMaxPets) or 12
 	local count = math.clamp(flags.fuseCount, minPets, maxPets)
@@ -1002,20 +1043,36 @@ local function fuseStep()
 
 	for _, pet in ipairs(save.Pets) do
 		local petData = library.Directory.Pets[pet.id]
-		local selected = petData and flags.fuseRarities[tostring(petData.rarity)]
+		local rarity = petData and tostring(petData.rarity)
+		local fusable = petData and not petData.isPremium and not petData.isGift and not FUSE_BLOCKED[rarity]
 
-		if selected and getPetKind(pet) == "Normal" and not equipped[pet.uid] and not pet.l then
+		if fusable and selected[rarity] and getPetKind(pet) == "Normal" and not equipped[pet.uid] and not pet.l then
 			local key = pet.hc and "hardcore" or "normal"
 			groups[key] = groups[key] or {}
 			table.insert(groups[key], pet.uid)
 		end
 	end
 
+	if next(groups) == nil then
+		status.fuse = "No unequipped, unlocked pets match the fuse rarities"
+		return
+	end
+
 	for key, uids in pairs(groups) do
-		if #uids >= count and not isBlacklisted("fuse:" .. key) then
-			local success = invoke("Fuse Pets", takeUids(uids, count))
-			if not success then
-				blacklistKey("fuse:" .. key)
+		if #uids < count then
+			status.fuse = ("Waiting for pets: %d/%d"):format(#uids, count)
+		elseif not isBlacklisted("fuse:" .. key) then
+			local cost = safeCall(library.RebornBalance.MachineCost, library.Shared.FusePetsCost, library.Shared.FuseHardcoreCost, key == "hardcore")
+
+			if cost and getCurrency(save, "Diamonds") < cost then
+				status.fuse = ("Need %d Diamonds to fuse"):format(cost)
+			else
+				local success, message = invoke("Fuse Pets", takeUids(uids, count))
+				status.fuse = success and ("Fused %d pets"):format(count) or ("Fuse failed: %s"):format(tostring(message))
+
+				if not success then
+					blacklistKey("fuse:" .. key)
+				end
 			end
 		end
 	end
@@ -1077,7 +1134,9 @@ local function darkMatterStep()
 
 		if group.kind == "Rainbow" and petData and string.lower(tostring(petData.name)) == wanted then
 			if #group.uids >= #rows and not isBlacklisted(key) then
-				local success = invoke("Convert To Dark Matter", takeUids(group.uids, #rows))
+				local success, message = invoke("Convert To Dark Matter", takeUids(group.uids, #rows))
+				status.machine = success and "Convert To Dark Matter ok" or ("Convert To Dark Matter: " .. tostring(message))
+
 				if not success then
 					blacklistKey(key)
 				end
@@ -1284,6 +1343,7 @@ local function homeStep()
 		farm = ("Farm: %s | Coins: %d"):format(status.farm or "idle", coinCount),
 		egg = ("Egg: %s"):format(status.egg or "idle"),
 		progress = ("Progress: %s | Pets equipped: %d"):format(status.progress or "idle", #getEquippedPets()),
+		pets = ("Fuse: %s | Machine: %s"):format(status.fuse or "idle", status.machine or "idle"),
 	}
 
 	for key, text in pairs(lines) do
@@ -1316,6 +1376,16 @@ local function runDiagnostics()
 	table.insert(lines, ("Save: %s | World: %s"):format(save and "ok" or "MISSING", tostring(getWorldName())))
 	table.insert(lines, ("Equipped pets: %d"):format(#getEquippedPets()))
 	table.insert(lines, ("Coins: %d | in range: %d | nearest: %s"):format(total, inRange, nearest == math.huge and "-" or tostring(math.floor(nearest))))
+	local attacking, newestDamage = 0, 0
+	for _, coin in pairs(coinCache) do
+		if isActive(coin) then
+			attacking = attacking + 1
+		end
+
+		newestDamage = math.max(newestDamage, coin.lastDamage)
+	end
+
+	table.insert(lines, ("Attacking coins: %d | last damage: %s"):format(attacking, newestDamage > 0 and ("%.1fs ago"):format(os.clock() - newestDamage) or "never"))
 	table.insert(lines, ("Best area: %s | Next area: %s"):format(tostring(getBestArea()), tostring((getNextArea()))))
 	table.insert(lines, ("Eggs: %d | selected: %s"):format(#entries, egg and egg.name or "none"))
 	table.insert(lines, ("getsenv: %s | getgc: %s | setfpscap: %s"):format(tostring(getsenv ~= nil), tostring(getgc ~= nil), tostring(setfpscap ~= nil)))
@@ -1363,6 +1433,7 @@ function PsxHub.detach()
 	end
 	table.clear(PsxHub.connections)
 
+	pcall(restorePetsControl)
 	pcall(setSkipAnimation, false)
 	pcall(runService.Set3dRenderingEnabled, runService, true)
 
@@ -1545,26 +1616,16 @@ local function buildUpgradeOptions()
 	return options
 end
 
----Build the pet rarity options.
+---Build the pet rarity options from the pet directory.
 ---@return string[]
 local function buildRarityOptions()
 	local options, seen = {}, {}
-	local numbers = safeCall(function()
-		return library.Shared.PetRarityNumbers
-	end)
 
-	if type(numbers) == "table" then
-		for rarity in pairs(numbers) do
+	for _, data in pairs(library.Directory.Pets) do
+		local rarity = type(data) == "table" and data.rarity
+		if rarity and not seen[rarity] then
 			seen[rarity] = true
 			table.insert(options, tostring(rarity))
-		end
-	else
-		for _, data in pairs(library.Directory.Pets) do
-			local rarity = type(data) == "table" and data.rarity
-			if rarity and not seen[rarity] then
-				seen[rarity] = true
-				table.insert(options, tostring(rarity))
-			end
 		end
 	end
 
@@ -1632,6 +1693,7 @@ local function buildInterface()
 	homeLabels.farm = homeTab:CreateLabel("Farm: idle")
 	homeLabels.egg = homeTab:CreateLabel("Egg: idle")
 	homeLabels.progress = homeTab:CreateLabel("Progress: idle")
+	homeLabels.pets = homeTab:CreateLabel("Pets: idle")
 	homeTab:CreateButton({ Name = "Run Self-Test (copies report)", Callback = runDiagnostics })
 
 	-- Auto Farm tab.
@@ -1708,8 +1770,8 @@ local function buildInterface()
 	addToggle(petTab, "Auto Convert to Dark Matter", "autoDarkConvert", false)
 	addToggle(petTab, "Auto Claim Dark Matter", "autoDarkClaim", false)
 	petTab:CreateButton({ Name = "Show Dark Matter Queue", Callback = showDarkMatterQueue })
-	petTab:CreateSection("Fuse Pets (normal pets of the selected rarities)")
-	addMultiDropdown(petTab, "Select Rarities to Fuse", "fuseOptions", buildRarityOptions(), function(selected)
+	petTab:CreateSection("Fuse Pets (unequipped, unlocked, normal pets)")
+	addMultiDropdown(petTab, "Select Rarities to Fuse (empty = Basic)", "fuseOptions", FUSABLE_RARITIES, function(selected)
 		flags.fuseRarities = selected
 	end)
 	addSlider(petTab, "Select Pets per Fuse", "fuseCount", { 3, 12 }, 1, 12)
@@ -1789,18 +1851,29 @@ local function initializeScript()
 	end)
 	connectEvent("Remove Coin", function(coinId)
 		coinCache[tostring(coinId)] = nil
+		selections[tostring(coinId)] = nil
 	end)
 	connectEvent("Update Coin Health", function(coinId, health)
 		local coin = coinCache[tostring(coinId)]
 		if coin then
 			coin.health = tonumber(health) or coin.health
+			coin.lastDamage = os.clock()
 		end
 	end)
+
+	-- The game fires this when the server accepted the pets for a coin.
+	local selectedSignal = safeCall(library.Signal.Fired, "Coin Selected")
+	local selectedConnection = selectedSignal and safeCall(selectedSignal.Connect, selectedSignal, function(coinId)
+		lastAck[tostring(coinId)] = os.clock()
+	end)
+	if selectedConnection then
+		table.insert(PsxHub.connections, selectedConnection)
+	end
 
 	-- The coins of the previous world are gone, so load the new ones.
 	local worldSignal = safeCall(library.Signal.Fired, "World Changed")
 	local worldConnection = worldSignal and safeCall(worldSignal.Connect, worldSignal, function()
-		table.clear(petAssignments)
+		table.clear(selections)
 		task.delay(1.5, resyncCoins)
 	end)
 	if worldConnection then
