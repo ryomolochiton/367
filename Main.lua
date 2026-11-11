@@ -1,3 +1,10 @@
+-- =====================================================
+-- VRT HUB — PET SIMULATOR 99 v2.0.0
+-- Bỏ hết button "once/now", chỉ giữ toggle
+-- Flag: chỉ dùng khi trong zone, không teleport
+-- Egg hook: kiểu 25MS (gán PlayEggAnimation + Message.Bottom của game)
+-- =====================================================
+
 if getgenv().VRT_LOADED then
 	if typeof(getgenv().VRT_Unload) == "function" then
 		pcall(getgenv().VRT_Unload)
@@ -14,6 +21,7 @@ if not game:IsLoaded() then
 	game.Loaded:Wait()
 end
 
+-- Services.
 local playersService = game:GetService("Players")
 local replicatedStorage = game:GetService("ReplicatedStorage")
 local runService = game:GetService("RunService")
@@ -31,6 +39,9 @@ local utilFolder = libraryFolder:FindFirstChild("Util")
 local networkFolder = replicatedStorage:WaitForChild("Network")
 local directFolder = replicatedStorage:FindFirstChild("__DIRECTORY")
 
+-- -----------------------------------------------------
+-- ANTI-CHEAT BYPASS
+-- -----------------------------------------------------
 local AntiCheat = {}
 AntiCheat.active = false
 AntiCheat.originalKey = nil
@@ -101,6 +112,9 @@ local function installBlunderBypass()
 end
 installBlunderBypass()
 
+-- -----------------------------------------------------
+-- Modules.
+-- -----------------------------------------------------
 local function safeRequire(instance)
 	if not instance or typeof(instance) ~= "Instance" then
 		return nil
@@ -184,9 +198,12 @@ local function unreliable(name, ...)
 	return false, result
 end
 
+-- -----------------------------------------------------
+-- Settings.
+-- -----------------------------------------------------
 local vrt = getgenv().VRT or {}
 getgenv().VRT = vrt
-vrt.Version = "2.2.1"
+vrt.Version = "2.0.0"
 vrt.connections = {}
 vrt.loops = {}
 vrt.fruitLog = {}
@@ -285,6 +302,9 @@ if typeof(settings.eggUnmappedWarned) ~= "table" then
 	settings.eggUnmappedWarned = {}
 end
 
+-- -----------------------------------------------------
+-- CONFIG
+-- -----------------------------------------------------
 local CONFIG_FOLDER = "VRT"
 local CONFIG_PATH = "VRT/PS99_Config.json"
 
@@ -375,6 +395,9 @@ end
 getgenv().VRT_SaveConfig = saveConfig
 getgenv().VRT_LoadConfig = loadConfig
 
+-- -----------------------------------------------------
+-- STATIC DATA
+-- -----------------------------------------------------
 local FLAGS = {
 	"Coins Flag", "Diamonds Flag", "Exotic Treasure Flag",
 	"Fortune Flag", "Golden Flag", "Hasty Flag",
@@ -398,6 +421,9 @@ local function cleanupTreehouseModels()
 	end
 end
 
+-- -----------------------------------------------------
+-- SAVE CACHE + INVENTORY INDEX
+-- -----------------------------------------------------
 local SKIP_BUCKETS = { Pet = true }
 local SaveCache = { data = nil, timestamp = 0, ttl = 2 }
 local InventoryIndex = { byId = {}, uidById = {}, bucketIds = {}, timestamp = 0, ttl = 5, dirty = true }
@@ -477,6 +503,9 @@ local function getBucketIds(bucketName)
 	return index.bucketIds[bucketName] or {}
 end
 
+-- -----------------------------------------------------
+-- DIRECTORY CACHE
+-- -----------------------------------------------------
 local DirectoryCache = {}
 
 local function getDirectoryIds(folderName)
@@ -508,6 +537,9 @@ local function clearDirectoryCache()
 	DirectoryCache = {}
 end
 
+-- -----------------------------------------------------
+-- EGG ID CACHE
+-- -----------------------------------------------------
 local eggNumberCache = nil
 
 local function getEggIdByNumber(eggNumber)
@@ -540,6 +572,9 @@ local function getMaxHatch()
 	return 1
 end
 
+-- -----------------------------------------------------
+-- ZONE CACHE
+-- -----------------------------------------------------
 local ZoneCache = { data = nil, timestamp = 0, ttl = 1 }
 
 local function getCurrentZone()
@@ -568,6 +603,9 @@ local function getInstanceInfo()
 	return nil
 end
 
+-- -----------------------------------------------------
+-- Webhook
+-- -----------------------------------------------------
 local function sendWebhook(url, payload)
 	if not url or url == "" then return false end
 	local clean, issues = reqCheck()
@@ -622,6 +660,9 @@ local function sendExecutionWebhook()
 	})
 end
 
+-- -----------------------------------------------------
+-- Hide Egg Anim (RenderStepped — max frequency)
+-- -----------------------------------------------------
 vrt.eggGuiConnections = {}
 
 local function hideEggGuis()
@@ -652,118 +693,198 @@ runService.RenderStepped:Connect(function()
 	end
 end)
 
--- Egg hook (25MS style): replace PlayEggAnimation in the Egg Opening Frontend env.
-local eggHookState = {
-	frontend = nil,
-	script = nil,
+-- -----------------------------------------------------
+-- -----------------------------------------------------
+-- EGG ANIMATION HOOK (ghi trực tiếp Message.PlayEggAnimation, kiểu 25MS)
+-- -----------------------------------------------------
+local EggHookState = {
+	messageTable = nil,
 	original = nil,
-	thread = nil,
+	installed = false,
+	lastApplied = false,
 }
 
-local function getEggFrontend()
-	local playerScripts = localPlayer:FindFirstChild("PlayerScripts")
-	local scriptsFolder = playerScripts and playerScripts:FindFirstChild("Scripts")
-	local gameFolder = scriptsFolder and scriptsFolder:FindFirstChild("Game")
-	local frontendScript = gameFolder and gameFolder:FindFirstChild("Egg Opening Frontend")
-	if not frontendScript then return nil end
-	local ok, env = pcall(getsenv, frontendScript)
-	if ok and typeof(env) == "table" then
-		return env, frontendScript
+local PLAY_FIELD = "PlayEggAnimation"
+
+local function isMessageTable(value)
+	if typeof(value) ~= "table" then
+		return false
 	end
+	local okBottom, bottom = pcall(rawget, value, "Bottom")
+	local okPlay, play = pcall(rawget, value, PLAY_FIELD)
+	return okBottom and okPlay and typeof(bottom) == "function" and typeof(play) == "function"
+end
+
+-- Tìm bảng Message của game: ưu tiên ModuleScript, fallback quét GC.
+local function resolveMessageTable()
+	if isMessageTable(EggHookState.messageTable) then
+		return EggHookState.messageTable
+	end
+
+	local direct = safeRequire(clientFolder:FindFirstChild("Message"))
+	if isMessageTable(direct) then
+		EggHookState.messageTable = direct
+		return direct
+	end
+
+	local library = safeRequire(libraryFolder)
+	local nested = typeof(library) == "table" and rawget(library, "Message") or nil
+	if isMessageTable(nested) then
+		EggHookState.messageTable = nested
+		return nested
+	end
+
+	local playerScripts = localPlayer:FindFirstChild("PlayerScripts")
+	if playerScripts then
+		for _, script in ipairs(playerScripts:GetDescendants()) do
+			if script:IsA("LocalScript") and script.Name:lower():find("egg") then
+				local ok, env = pcall(getsenv, script)
+				if ok and typeof(env) == "table" then
+					for _, value in pairs(env) do
+						if isMessageTable(value) then
+							EggHookState.messageTable = value
+							return value
+						end
+						if typeof(value) == "table" then
+							for _, inner in pairs(value) do
+								if isMessageTable(inner) then
+									EggHookState.messageTable = inner
+									return inner
+								end
+							end
+						end
+					end
+				end
+			end
+		end
+	end
+
+	local okGc, gcValues = pcall(getgc, true)
+	if okGc and typeof(gcValues) == "table" then
+		for _, value in pairs(gcValues) do
+			if isMessageTable(value) then
+				EggHookState.messageTable = value
+				return value
+			end
+		end
+	end
+
 	return nil
 end
 
--- Hook Egg Animation: show "Still Openin" via the game's native Message.Bottom.
-local function eggMessageHook(eggName)
-	pcall(setthreadidentity, 4)
-	local ok, err = pcall(function()
-		local eggCmds = require(replicatedStorage.Library.Client.EggCmds)
-		local color = Color3.fromRGB(math.random(0, 255), math.random(0, 255), math.random(0, 255))
-		eggHookState.frontend.Message.Bottom({
-			Message = "Still Openin " .. tostring(eggName) .. " " .. tostring(eggCmds.GetMaxHatch()),
-			Color = color,
-		})
-	end)
-	if not ok then
-		warn("[VRT] Egg hook error:", err)
+-- Chặn hoàn toàn animation mở trứng (dùng cho HideEggAnim khi không hook).
+local function blockEggAnimation()
+	local messageTable = resolveMessageTable()
+	if not messageTable then
+		return false
 	end
+	if not EggHookState.original then
+		EggHookState.original = rawget(messageTable, PLAY_FIELD)
+	end
+	if rawget(messageTable, PLAY_FIELD) ~= EggHookState.blocker then
+		EggHookState.blocker = function()
+			return
+		end
+		local ok = pcall(rawset, messageTable, PLAY_FIELD, EggHookState.blocker)
+		return ok
+	end
+	return true
 end
 
--- Hide Egg Animation: skip the animation entirely.
-local function eggHideHook()
-	return
-end
-
-local function restoreEggHook()
-	local env = eggHookState.frontend
-	if env and eggHookState.original then
-		pcall(function()
-			env.PlayEggAnimation = eggHookState.original
-		end)
+-- Bỏ hook, trả lại animation gốc.
+local function restoreEggAnimation()
+	local messageTable = EggHookState.messageTable
+	if not isMessageTable(messageTable) or not EggHookState.original then
+		return false
 	end
+	local ok = pcall(rawset, messageTable, PLAY_FIELD, EggHookState.original)
+	if ok then
+		EggHookState.installed = false
+	end
+	return ok
 end
 
 local function applyEggHook()
-	local env, frontendScript = getEggFrontend()
-	if not env then return false end
-
-	-- Env changed (script reloaded): drop the stale original.
-	if env ~= eggHookState.frontend then
-		eggHookState.frontend = env
-		eggHookState.script = frontendScript
-		eggHookState.original = nil
+	if not settings.HookEggAnimation and not settings.HideEggAnim then
+		return restoreEggAnimation()
 	end
 
-	local current = env.PlayEggAnimation
-	if typeof(current) ~= "function" then return false end
-	if current ~= eggMessageHook and current ~= eggHideHook then
-		eggHookState.original = current
+	local messageTable = resolveMessageTable()
+	if not messageTable then
+		return false
 	end
 
-	local target = eggHookState.original
+	if not EggHookState.original then
+		EggHookState.original = rawget(messageTable, PLAY_FIELD)
+	end
+
 	if settings.HookEggAnimation then
-		target = eggMessageHook
-	elseif settings.HideEggAnim then
-		target = eggHideHook
+		local hookFn = function(eggParam)
+			local label = eggParam
+			if typeof(eggParam) == "table" then
+				label = rawget(eggParam, "_id") or rawget(eggParam, "name") or rawget(eggParam, "Name") or "Egg"
+			end
+			pcall(hideEggGuis)
+			local color = Color3.fromRGB(math.random(0, 255), math.random(0, 255), math.random(0, 255))
+			local text = "Still Openin " .. tostring(label) .. " " .. tostring(getMaxHatch())
+			task.spawn(function()
+				pcall(setthreadidentity, 4)
+				pcall(function()
+					messageTable.Bottom({ Message = text, Color = color })
+				end)
+			end)
+			return
+		end
+		pcall(setstackhidden, hookFn, true)
+		pcall(debug.setinfo, hookFn, "s", "[C]")
+		pcall(debug.setinfo, hookFn, "n", "")
+		local ok = pcall(rawset, messageTable, PLAY_FIELD, hookFn)
+		if ok then
+			EggHookState.installed = true
+		end
+		return ok
 	end
 
-	if target and current ~= target then
-		env.PlayEggAnimation = target
-	end
-	return true
+	return blockEggAnimation()
 end
 
--- Called by the toggles: apply when either is on, restore when both are off.
 local function installEggHook()
-	if settings.HookEggAnimation or settings.HideEggAnim then
-		return applyEggHook()
+	if applyEggHook() then
+		EggHookState.lastApplied = true
+		return true
 	end
-	restoreEggHook()
-	return true
+	return false
 end
 
--- Re-apply periodically in case the frontend script reloads.
-local eggRunId = (getgenv().VRT_EGG_RUN or 0) + 1
-getgenv().VRT_EGG_RUN = eggRunId
-
-eggHookState.thread = task.spawn(function()
-	while getgenv().VRT_LOADED and getgenv().VRT_EGG_RUN == eggRunId do
+-- Retry cho tới khi tìm được bảng Message (game load bất đồng bộ).
+task.spawn(function()
+	local shouldRun = false
+	for _ = 1, 60 do
+		if not getgenv().VRT_LOADED then
+			return
+		end
 		if settings.HookEggAnimation or settings.HideEggAnim then
-			pcall(applyEggHook)
+			shouldRun = true
+			if applyEggHook() then
+				break
+			end
 		end
-		task.wait(5)
+		task.wait(1)
 	end
-	eggHookState.thread = nil
-end)
-
-vrt.connections.EggHookCharacter = localPlayer.CharacterAdded:Connect(function()
-	task.delay(1, function()
-		if getgenv().VRT_LOADED and (settings.HookEggAnimation or settings.HideEggAnim) then
+	-- Giữ trạng thái đồng bộ khi user bật/tắt toggle.
+	while getgenv().VRT_LOADED do
+		local want = settings.HookEggAnimation or settings.HideEggAnim
+		if want or EggHookState.installed then
 			pcall(applyEggHook)
 		end
-	end)
+		task.wait(0.5)
+	end
 end)
 
+
+-- -----------------------------------------------------
+-- Helpers.
+-- -----------------------------------------------------
 local function getRoot()
 	local character = localPlayer.Character
 	return character and character:FindFirstChild("HumanoidRootPart") or nil
@@ -814,6 +935,9 @@ local function getClaimPillar()
 	return expedition and expedition:FindFirstChild("ClaimPillar")
 end
 
+-- -----------------------------------------------------
+-- BREAKABLE POSITIONS
+-- -----------------------------------------------------
 local BreakablePositions = { data = nil, timestamp = 0, ttl = 2 }
 local breakablePositionCache = setmetatable({}, { __mode = "k" })
 
@@ -852,6 +976,9 @@ local function getBreakablePositions()
 	return list
 end
 
+-- -----------------------------------------------------
+-- EGG POSITIONS
+-- -----------------------------------------------------
 local EggPositions = { data = nil, timestamp = 0, ttl = 2 }
 local eggPositionCache = setmetatable({}, { __mode = "k" })
 
@@ -910,6 +1037,9 @@ local function getEggPositions()
 	return list
 end
 
+-- -----------------------------------------------------
+-- Dropdown memoize
+-- -----------------------------------------------------
 local DerivedCache = {}
 local DERIVED_TTL = 5
 
@@ -1130,6 +1260,9 @@ local function generateRandomString(length)
 	return table.concat(out)
 end
 
+-- -----------------------------------------------------
+-- Anti-AFK
+-- -----------------------------------------------------
 task.spawn(function()
 	if getgenv().VRT_AntiAFK then return end
 	getgenv().VRT_AntiAFK = true
@@ -1171,6 +1304,9 @@ task.spawn(function()
 	end
 end)
 
+-- -----------------------------------------------------
+-- Core
+-- -----------------------------------------------------
 local Core = {}
 
 local closestBuffer = {}
@@ -1603,6 +1739,9 @@ Core.BuyEggSlots = function()
 	end
 end
 
+-- -----------------------------------------------------
+-- FLAG (chỉ dùng khi trong zone, KHÔNG teleport)
+-- -----------------------------------------------------
 local flagAutoCache = {
 	lastCheck = 0,
 	lastConsume = 0,
@@ -1914,6 +2053,9 @@ Core.AutoUseFlag = function()
 	end
 end
 
+-- -----------------------------------------------------
+-- MERCHANT
+-- -----------------------------------------------------
 local merchantState = {
 	lastVisit = nil,
 	attempted = false,
@@ -2144,6 +2286,9 @@ Core.BuyFromMerchant = function()
 	return merchantState.lastResult
 end
 
+-- -----------------------------------------------------
+-- EXPEDITION CLAIM
+-- -----------------------------------------------------
 local expeditionState = {
 	lastClaimAt = 0,
 	lastResult = nil,
@@ -2356,6 +2501,9 @@ Core.ClaimExpedition = function()
 	return "failed"
 end
 
+-- -----------------------------------------------------
+-- Other Core functions
+-- -----------------------------------------------------
 Core.BuyZone = function()
 	local zoneUtil = Modules.ZonesUtil
 	if zoneUtil and zoneUtil.GetMaxOwnedZone and zoneUtil.GetZoneFromNumber then
@@ -2801,6 +2949,9 @@ Core.ConsumeFruits = function()
 	if totalConsumed > 0 then invalidateSaveCache() end
 end
 
+-- -----------------------------------------------------
+-- Auto Time Trial
+-- -----------------------------------------------------
 local timeTrialChestCache = nil
 
 local function getTimeTrialChestIds()
@@ -3167,6 +3318,9 @@ Core.Comet = function()
 	invoke("Comet_Spawn")
 end
 
+-- -----------------------------------------------------
+-- Loop manager
+-- -----------------------------------------------------
 local function startLoop(flag, interval, callback)
 	if vrt.loops[flag] then return end
 	vrt.loops[flag] = true
@@ -3215,6 +3369,9 @@ local function bindConnection(flag, signal, callback, cooldown)
 	end)
 end
 
+-- -----------------------------------------------------
+-- DIAMOND MOUNTAIN LIBRARY (embedded)
+-- -----------------------------------------------------
 local DiamondMountain = (function()
 	local playersService = game:GetService("Players")
 	local workspaceService = game:GetService("Workspace")
@@ -4389,6 +4546,9 @@ local function autoJoinTick()
 	instance:joinEvent()
 end
 
+-- -----------------------------------------------------
+-- UI.
+-- -----------------------------------------------------
 local rayfieldOk, rayfield = pcall(function()
 	return loadstring(game:HttpGet("https://sirius.menu/rayfield"))()
 end)
@@ -4428,7 +4588,6 @@ local tabs = {
 	auto = safeTab("Auto", "settings"),
 	update = safeTab("Update", "refresh-cw"),
 	rank = safeTab("Auto-Rank", "dollar-sign"),
-	event = safeTab("Event", "mountain"),
 	secret = safeTab("Admin Abuse", "shield"),
 	mailbox = safeTab("Mailbox", "mail"),
 }
@@ -4463,6 +4622,7 @@ end
 
 getgenv().VRT_RefreshDropdowns = refreshAllDropdowns
 
+-- ================= AUTO-FARM =================
 if tabs.farm then
 	tabs.farm:CreateSection("Farming Section")
 	tabs.farm:CreateSlider({
@@ -4603,6 +4763,7 @@ if tabs.farm then
 	})
 end
 
+-- ================= AUTO KEYS / TICKETS =================
 if tabs.keys then
 	tabs.keys:CreateSection("Spinny Wheels Section")
 	wheelsDropdown = tabs.keys:CreateDropdown({
@@ -4698,6 +4859,7 @@ if tabs.keys then
 	})
 end
 
+-- ================= EGGS =================
 if tabs.eggs then
 	tabs.eggs:CreateSection("Egg Opening")
 	tabs.eggs:CreateToggle({
@@ -4710,7 +4872,7 @@ if tabs.eggs then
 		end,
 	})
 	tabs.eggs:CreateToggle({
-		Name = "Hook Egg Animation (native Message.Bottom)",
+		Name = "Hook Egg Animation (Message.Bottom, no anim)",
 		CurrentValue = settings.HookEggAnimation or false, Flag = "HookEggAnimation",
 		Callback = function(value)
 			settings.HookEggAnimation = value
@@ -4782,6 +4944,7 @@ if tabs.eggs then
 	})
 end
 
+-- ================= AUTO =================
 if tabs.auto then
 	tabs.auto:CreateToggle({
 		Name = "Auto Daycare (Claim and Enroll)", CurrentValue = settings.Daycare, Flag = "Daycare",
@@ -4896,6 +5059,7 @@ if tabs.auto then
 	})
 end
 
+-- ================= UPDATE =================
 if tabs.update then
 	tabs.update:CreateSection("Fruits")
 	fruitUpgradeDropdown = tabs.update:CreateDropdown({
@@ -4936,6 +5100,7 @@ if tabs.update then
 	})
 end
 
+-- ================= AUTO-RANK =================
 if tabs.rank then
 	tabs.rank:CreateSection("Ranking Section")
 	tabs.rank:CreateToggle({
@@ -4989,230 +5154,7 @@ if tabs.rank then
 	})
 end
 
-if tabs.event then
-	tabs.event:CreateSection("Diamond Mountain")
-
-	tabs.event:CreateToggle({
-		Name = "Auto Join Diamond Mountain",
-		CurrentValue = settings.DMAutoJoin or false,
-		Flag = "DMAutoJoin",
-		Callback = function(value)
-			settings.DMAutoJoin = value
-			queueSave()
-			if value then
-				startLoop("DMAutoJoin", 5, autoJoinTick)
-			else
-				stopLoop("DMAutoJoin")
-			end
-		end,
-	})
-
-	tabs.event:CreateButton({
-		Name = "Reload Remotes",
-		Callback = function()
-			local instance = ensureDmInstance()
-			if not instance then return end
-			pcall(instance.resolveRemotes, instance)
-			local missing = instance:getMissingRemotes()
-			rayfield:Notify({
-				Title = "Diamond Mountain",
-				Content = #missing == 0 and "Đã resolve đủ remotes." or ("Thiếu: " .. table.concat(missing, ", ")),
-				Duration = 5,
-			})
-		end,
-	})
-
-	tabs.event:CreateSection("Traveling Merchant")
-
-	tabs.event:CreateToggle({
-		Name = "Auto Buy From Merchant (chờ visit mới)",
-		CurrentValue = settings.AutoMerchant or false,
-		Flag = "AutoMerchant",
-		Callback = function(value)
-			settings.AutoMerchant = value
-			queueSave()
-			merchantState.lastVisit = nil
-			merchantState.attempted = false
-			if value then
-				startLoop("AutoMerchant", 10, function()
-					Core.BuyFromMerchant()
-				end)
-			else
-				stopLoop("AutoMerchant")
-			end
-		end,
-	})
-
-	tabs.event:CreateToggle({
-		Name = "Return to original position after buy",
-		CurrentValue = settings.MerchantReturnToPos ~= false,
-		Flag = "MerchantReturnToPos",
-		Callback = function(value)
-			settings.MerchantReturnToPos = value
-			queueSave()
-		end,
-	})
-
-	tabs.event:CreateSection("Claim Expedition")
-
-	tabs.event:CreateToggle({
-		Name = "Auto Claim Expedition (teleport + touch)",
-		CurrentValue = settings.AutoClaimExpedition or false,
-		Flag = "AutoClaimExpedition",
-		Callback = function(value)
-			settings.AutoClaimExpedition = value
-			queueSave()
-			expeditionState.lastClaimAt = 0
-			if value then
-				startLoop("AutoClaimExpedition", 5, function()
-					Core.ClaimExpedition()
-				end)
-			else
-				stopLoop("AutoClaimExpedition")
-			end
-		end,
-	})
-
-	tabs.event:CreateToggle({
-		Name = "Fallback: teleport if far touch fails",
-		CurrentValue = settings.ExpeditionFallbackTeleport ~= false,
-		Flag = "ExpeditionFallbackTeleport",
-		Callback = function(value)
-			settings.ExpeditionFallbackTeleport = value
-			queueSave()
-		end,
-	})
-
-	tabs.event:CreateSection("DM Farm Point")
-
-	tabs.event:CreateButton({
-		Name = "Set DM Farm Point",
-		Callback = function()
-			local root = getRoot()
-			if not root then
-				rayfield:Notify({ Title = "VRT", Content = "Không tìm thấy nhân vật", Duration = 3 })
-				return
-			end
-			settings.DMFarmPoint = { x = root.Position.X, y = root.Position.Y, z = root.Position.Z }
-			queueSave()
-			if vrt.dmInstance then
-				pcall(function() vrt.dmInstance:setFarmPoint(settings.DMFarmPoint) end)
-			end
-			rayfield:Notify({
-				Title = "DM Farm Point",
-				Content = ("Đã lưu (%.0f, %.0f, %.0f)"):format(root.Position.X, root.Position.Y, root.Position.Z),
-				Duration = 4,
-			})
-		end,
-	})
-
-	tabs.event:CreateToggle({
-		Name = "Use DM Farm Point (Auto Farm về đây)",
-		CurrentValue = settings.UseDMFarmPoint or false,
-		Flag = "UseDMFarmPoint",
-		Callback = function(value)
-			settings.UseDMFarmPoint = value
-			queueSave()
-			if vrt.dmInstance then
-				if value and settings.DMFarmPoint then
-					pcall(function() vrt.dmInstance:setFarmPoint(settings.DMFarmPoint) end)
-				else
-					pcall(function() vrt.dmInstance:setFarmPoint(nil) end)
-				end
-			end
-		end,
-	})
-
-	tabs.event:CreateButton({
-		Name = "Clear DM Farm Point",
-		Callback = function()
-			settings.DMFarmPoint = nil
-			settings.UseDMFarmPoint = false
-			queueSave()
-			if vrt.dmInstance then
-				pcall(function() vrt.dmInstance:setFarmPoint(nil) end)
-			end
-			rayfield:Notify({ Title = "VRT", Content = "Đã xoá DM farm point", Duration = 3 })
-		end,
-	})
-
-	tabs.event:CreateSection("Auto Farm Controls")
-
-	tabs.event:CreateSlider({
-		Name = "Max Camp (Auto Farm)",
-		Range = { 1, 6 },
-		Increment = 1,
-		Suffix = "camp",
-		CurrentValue = settings.DMMaxCamp,
-		Flag = "DMMaxCamp",
-		Callback = function(value)
-			settings.DMMaxCamp = value
-			queueSave()
-			if vrt.dmInstance then
-				pcall(vrt.dmInstance.setMaxCamp, vrt.dmInstance, value)
-			end
-		end,
-	})
-
-	tabs.event:CreateSlider({
-		Name = "Manual Teleport Camp",
-		Range = { 1, 6 },
-		Increment = 1,
-		Suffix = "camp",
-		CurrentValue = 1,
-		Flag = "DMCampIndex",
-		Callback = function(value)
-			if vrt.dmInstance then
-				pcall(vrt.dmInstance.setCampIndex, vrt.dmInstance, value)
-			end
-		end,
-	})
-
-	tabs.event:CreateButton({
-		Name = "Reset Camp Cache",
-		Callback = function()
-			if vrt.dmInstance then
-				pcall(vrt.dmInstance.resetCampCache, vrt.dmInstance)
-				rayfield:Notify({
-					Title = "Diamond Mountain",
-					Content = "Đã xoá cache camp.",
-					Duration = 3,
-				})
-			end
-		end,
-	})
-
-	tabs.event:CreateSection("Features")
-
-	for _, feature in ipairs(DM_FEATURES) do
-		tabs.event:CreateToggle({
-			Name = feature.name,
-			CurrentValue = false,
-			Flag = "DM_" .. feature.id,
-			Callback = function(value)
-				local inst = ensureDmInstance()
-				if not inst then return end
-				if value then
-					inst:start(feature.id)
-				else
-					inst:stop(feature.id)
-				end
-			end,
-		})
-	end
-
-	tabs.event:CreateSection("Utility")
-
-	tabs.event:CreateButton({
-		Name = "Stop All Features",
-		Callback = function()
-			if vrt.dmInstance then
-				pcall(vrt.dmInstance.stopAll, vrt.dmInstance)
-			end
-		end,
-	})
-end
-
+-- ================= ADMIN ABUSE =================
 if tabs.secret then
 	tabs.secret:CreateSection("Admin Abuse Section")
 	tabs.secret:CreateToggle({
@@ -5272,6 +5214,7 @@ if tabs.secret then
 	})
 end
 
+-- ================= MAILBOX =================
 if tabs.mailbox then
 	tabs.mailbox:CreateInput({
 		Name = "Input Username", PlaceholderText = "Input Username",
@@ -5326,11 +5269,17 @@ if tabs.mailbox then
 	})
 end
 
+-- -----------------------------------------------------
+-- Refresh dropdowns
+-- -----------------------------------------------------
 task.spawn(function()
 	task.wait(3)
 	pcall(refreshAllDropdowns)
 end)
 
+-- -----------------------------------------------------
+-- Invalidate breakable cache on new breakable
+-- -----------------------------------------------------
 do
 	local brkFolder = getBreakableFolder()
 	if brkFolder then
@@ -5340,6 +5289,9 @@ do
 	end
 end
 
+-- -----------------------------------------------------
+-- Apply saved toggles
+-- -----------------------------------------------------
 task.spawn(function()
 	task.wait(2)
 
@@ -5404,6 +5356,9 @@ task.spawn(function()
 	if settings.HookEggAnimation or settings.HideEggAnim then pcall(installEggHook) end
 end)
 
+-- -----------------------------------------------------
+-- Unload
+-- -----------------------------------------------------
 getgenv().VRT_Unload = function()
 	getgenv().VRT_LOADED = false
 	for flag, connection in pairs(vrt.connections) do
@@ -5439,16 +5394,15 @@ getgenv().VRT_Unload = function()
 		AntiCheat.active = false
 	end
 
-	restoreEggHook()
-	eggHookState.frontend = nil
-	eggHookState.script = nil
-	eggHookState.original = nil
-	eggHookState.thread = nil
+	pcall(restoreEggAnimation)
 
 	pcall(saveConfig)
 	pcall(function() rayfield:Destroy() end)
 end
 
+-- -----------------------------------------------------
+-- Send webhook
+-- -----------------------------------------------------
 task.spawn(function()
 	task.wait(2)
 	pcall(sendExecutionWebhook)
