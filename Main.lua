@@ -107,6 +107,12 @@ do
 	end
 end
 
+local function stage(message)
+	print("[VRT] " .. message)
+end
+
+stage("khởi động...")
+
 if getgenv().VRT_LOADED then
 	if typeof(getgenv().VRT_Unload) == "function" then
 		pcall(getgenv().VRT_Unload)
@@ -134,12 +140,17 @@ local marketplaceService = game:GetService("MarketplaceService")
 local tweenService = game:GetService("TweenService")
 
 local localPlayer = playersService.LocalPlayer
-local libraryFolder = replicatedStorage:WaitForChild("Library")
-local clientFolder = libraryFolder:WaitForChild("Client")
-local directoryFolder = libraryFolder:WaitForChild("Directory")
+local libraryFolder = replicatedStorage:WaitForChild("Library", 30)
+local networkFolder = replicatedStorage:WaitForChild("Network", 30)
+local clientFolder = libraryFolder and libraryFolder:WaitForChild("Client", 30)
+local directoryFolder = libraryFolder and libraryFolder:WaitForChild("Directory", 30)
+if not (libraryFolder and networkFolder and clientFolder and directoryFolder) then
+	getgenv().VRT_LOADED = nil
+	return warn("[VRT] Không thấy ReplicatedStorage.Library/Network - đang ở đúng Pet Simulator 99 chưa?")
+end
 local utilFolder = libraryFolder:FindFirstChild("Util")
-local networkFolder = replicatedStorage:WaitForChild("Network")
 local directFolder = replicatedStorage:FindFirstChild("__DIRECTORY")
+stage("đã thấy folder game")
 
 -- -----------------------------------------------------
 -- ANTI-CHEAT BYPASS
@@ -202,6 +213,7 @@ local function installBlunderBypass()
 	return true
 end
 installBlunderBypass()
+stage("xong bước AC")
 
 -- -----------------------------------------------------
 -- Modules.
@@ -210,7 +222,19 @@ local function safeRequire(instance)
 	if not instance or typeof(instance) ~= "Instance" then
 		return nil
 	end
-	local ok, result = pcall(require, instance)
+	local finished, ok, result = false, false, nil
+	task.spawn(function()
+		ok, result = pcall(require, instance)
+		finished = true
+	end)
+	local startedAt = os.clock()
+	while not finished and os.clock() - startedAt < 5 do
+		task.wait()
+	end
+	if not finished then
+		warn("[VRT] require quá 5s, bỏ qua module: " .. instance.Name)
+		return nil
+	end
 	return ok and result or nil
 end
 
@@ -255,6 +279,7 @@ local Modules = {
 }
 
 local network = Modules.Network
+stage("đã load modules")
 
 local function invoke(name, ...)
 	if not network or not network.Invoke then return false end
@@ -3017,10 +3042,32 @@ end
 -- -----------------------------------------------------
 -- UI.
 -- -----------------------------------------------------
+stage("đang tải Rayfield...")
+-- Identity 4 có thể không đủ quyền gắn UI vào gethui/CoreGui -> tạm đặt 8 để tạo menu.
+pcall(setthreadidentity, 8)
+
 local rayfieldOk, rayfield = pcall(function()
-	local source, httpErr = Compat.httpGet("https://sirius.menu/rayfield")
-	if not source then error(httpErr or "HttpGet thất bại", 0) end
-	return loadstring(source)()
+	local lastErr
+	for _, url in ipairs({
+		"https://sirius.menu/rayfield",
+		"https://raw.githubusercontent.com/SiriusSoftwareLtd/Rayfield/main/source.lua",
+	}) do
+		local source, httpErr = Compat.httpGet(url)
+		if source then
+			local chunk, compileErr = loadstring(source)
+			if chunk then
+				local okRun, lib = pcall(chunk)
+				if okRun and typeof(lib) == "table" then return lib end
+				lastErr = tostring(lib)
+			else
+				lastErr = tostring(compileErr)
+			end
+		else
+			lastErr = tostring(httpErr)
+		end
+		warn("[VRT] Rayfield lỗi từ " .. url .. ": " .. tostring(lastErr))
+	end
+	error(lastErr or "không tải được Rayfield", 0)
 end)
 
 if not rayfieldOk or typeof(rayfield) ~= "table" then
@@ -3028,6 +3075,7 @@ if not rayfieldOk or typeof(rayfield) ~= "table" then
 	return warn("[VRT] Không load được Rayfield: " .. tostring(rayfield))
 end
 
+stage("đang tạo cửa sổ...")
 local windowOk, window = pcall(function()
 	return rayfield:CreateWindow({
 		Name = "VRT PET SIM 99",
@@ -3039,10 +3087,13 @@ local windowOk, window = pcall(function()
 	})
 end)
 
+pcall(setthreadidentity, 4)
+
 if not windowOk or not window then
 	getgenv().VRT_LOADED = nil
 	return warn("[VRT] CreateWindow thất bại: " .. tostring(window))
 end
+stage("đã tạo cửa sổ menu")
 
 local function safeTab(name, icon)
 	local ok, tab = pcall(function() return window:CreateTab(name, icon) end)
