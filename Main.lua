@@ -335,6 +335,8 @@ local defaults = {
 	ClickAura = false,
 	ClickAuraViz = false,
 	OpenEgg = false,
+	OpenEggRadius = 120,
+	OpenEggCooldown = 0.5,
 	OpenSelectedEgg = false,
 	SelectedEggId = "",
 	BuySelectedCustomEgg = false,
@@ -763,253 +765,184 @@ local function sendExecutionWebhook()
 end
 
 -- -----------------------------------------------------
--- Hide Egg Anim (RenderStepped — max frequency)
+-- EGG HOOK (ban sao nguyen van tu 25MSobfuscator)
 -- -----------------------------------------------------
-vrt.eggGuiConnections = {}
+vrt.eggApi = vrt.eggApi or {}
 
-local function hideEggGuis()
-	local playerGui = localPlayer:FindFirstChild("PlayerGui")
-	if not playerGui then return end
-	local target = playerGui:FindFirstChild("EggOpenAnimation")
-	if target and target:IsA("ScreenGui") then
-		if target.Enabled then
-			target.Enabled = false
-		end
+-- 25MS: v33 = getsenv(PlayerScripts.Scripts.Game["Egg Opening Frontend"])
+local function getEggEnv()
+	local playerScripts = localPlayer:FindFirstChild("PlayerScripts")
+	local scripts = playerScripts and playerScripts:FindFirstChild("Scripts")
+	local gameFolder = scripts and scripts:FindFirstChild("Game")
+	local node = gameFolder and gameFolder:FindFirstChild("Egg Opening Frontend")
+	if not node then
+		return nil, nil
 	end
-	for _, name in ipairs({ "HatchSettings", "LootMessage" }) do
-		local gui = playerGui:FindFirstChild(name)
-		if gui and gui:IsA("ScreenGui") and gui.Enabled then
-			gui.Enabled = false
-		end
+	local ok, env = pcall(getsenv, node)
+	if ok and typeof(env) == "table" then
+		return env, node
 	end
+	return nil, node
 end
 
-runService.RenderStepped:Connect(function()
-	if not getgenv().VRT_LOADED then return end
-	if not settings.HideEggAnim then return end
-	local playerGui = localPlayer:FindFirstChild("PlayerGui")
-	if not playerGui then return end
-	local target = playerGui:FindFirstChild("EggOpenAnimation")
-	if target and target:IsA("ScreenGui") and target.Enabled then
-		target.Enabled = false
+-- 25MS: getgenv().cachedFunctions  (luu ham goc truoc khi bi ghi de)
+local function ensureGenvTable()
+	local genv = getgenv()
+	if typeof(genv.cachedFunctions) ~= "table" then
+		genv.cachedFunctions = {}
 	end
-end)
-
--- -----------------------------------------------------
--- EGG ANIMATION HOOK (kiểu 25MS: gán PlayEggAnimation + Message.Bottom)
--- -----------------------------------------------------
-local eggHookState = {
-	frontend = nil,
-	script = nil,
-	path = nil,
-	funcName = nil,
-	hook = nil,
-	callOriginal = nil,
-	message = nil,
-	warned = false,
-	thread = nil,
-}
-
-local function isMessageModule(value)
-	return typeof(value) == "table" and typeof(value.Bottom) == "function"
+	return genv
 end
 
--- Lấy Message.Bottom gốc của game (giống 25MS).
-local function resolveGameMessage()
-	if eggHookState.message then return eggHookState.message end
-
-	local direct = safeRequire(clientFolder:FindFirstChild("Message"))
-	if isMessageModule(direct) then
-		eggHookState.message = direct
-		print("[VRT] Message.Bottom: Library.Client.Message")
-		return direct
-	end
-
-	local library = safeRequire(libraryFolder)
-	local nested = typeof(library) == "table" and library.Message or nil
-	if isMessageModule(nested) then
-		eggHookState.message = nested
-		print("[VRT] Message.Bottom: Library.Message")
-		return nested
-	end
-	return nil
-end
-
-local function pushEggMessage(eggName)
-	local message = resolveGameMessage()
-	if not message then
-		if not eggHookState.warned then
-			eggHookState.warned = true
-			warn("[VRT] Không tìm thấy Message.Bottom, dùng animation gốc.")
-		end
+local function cacheEggFunctions()
+	local env = getEggEnv()
+	if not env then
 		return false
 	end
-
-	local color = Color3.fromRGB(math.random(0, 255), math.random(0, 255), math.random(0, 255))
-	local text = "Still Openin " .. tostring(eggName) .. " " .. tostring(getMaxHatch())
-	pcall(setthreadidentity, 4)
-	return (pcall(message.Bottom, { Message = text, Color = color }))
+	local genv = ensureGenvTable()
+	if genv.cachedFunctions.EggAnimation == nil and typeof(env.PlayEggAnimation) == "function" then
+		genv.cachedFunctions.EggAnimation = env.PlayEggAnimation
+	end
+	if genv.cachedFunctions.Message == nil and typeof(env.Message) == "table" then
+		genv.cachedFunctions.Message = env.Message
+	end
+	return genv.cachedFunctions.EggAnimation ~= nil
 end
 
-local function onEggAnimation(eggName, ...)
-	if settings.HideEggAnim then pcall(hideEggGuis) end
-	if settings.HookEggAnimation and pushEggMessage(eggName) then
-		return
+-- 25MS: HideEggAnimation -> _u0.PlayEggAnimation = function() do return end end
+local function hideEggAnimation()
+	local env = getEggEnv()
+	if not env then
+		return false
 	end
-	local call = eggHookState.callOriginal
-	if call then
-		return call(eggName, ...)
-	end
+	local genv = ensureGenvTable()
+	pcall(function()
+		env.PlayEggAnimation = genv.cachedFunctions.EggAnimation
+		env.PlayEggAnimation = function() do return end end
+	end)
+	return true
 end
 
-local FRONTEND_PATHS = {
-	{ "PlayerScripts", "Scripts", "Game", "Egg Opening Frontend" },
-	{ "PlayerScripts", "Scripts", "Core", "Egg Opening Frontend" },
-	{ "PlayerScripts", "PlayerModule", "Egg Opening Frontend" },
-}
-
-local function findEggFrontend()
-	for _, path in ipairs(FRONTEND_PATHS) do
-		local node = localPlayer
-		for _, name in ipairs(path) do
-			node = node and node:FindFirstChild(name)
-		end
-		if node then
-			local ok, env = pcall(getsenv, node)
-			if ok and typeof(env) == "table" then
-				eggHookState.frontend = env
-				eggHookState.script = node
-				eggHookState.path = table.concat(path, ".")
-				return true
+-- 25MS: HookEggAnimation -> _u0.PlayEggAnimation = function(a) ... Message.Bottom ... end
+local function hookEggAnimation()
+	local env = getEggEnv()
+	if not env then
+		return false
+	end
+	local genv = ensureGenvTable()
+	local message = genv.cachedFunctions.Message or env.Message
+	local ok = pcall(function()
+		env.PlayEggAnimation = genv.cachedFunctions.EggAnimation
+		env.PlayEggAnimation = function(a)
+			pcall(setthreadidentity, 4)
+			local replicatedStorage = game:GetService("ReplicatedStorage")
+			local eggCmds = require(replicatedStorage.Library.Client.EggCmds)
+			local maxHatch = tostring(eggCmds.GetMaxHatch())
+			local color = Color3.fromRGB(math.random(0, 255), math.random(0, 255), math.random(0, 255))
+			if typeof(message) == "table" and typeof(message.Bottom) == "function" then
+				message.Bottom({ Message = "Still Openin " .. tostring(a) .. " " .. maxHatch, Color = color })
 			end
+			do return end
 		end
-	end
-	return false
-end
-
-local function scanForFrontend()
-	local playerScripts = localPlayer:FindFirstChild("PlayerScripts")
-	if not playerScripts then return false end
-	for _, script in ipairs(playerScripts:GetDescendants()) do
-		if script:IsA("LocalScript") or script:IsA("ModuleScript") then
-			local ok, env = pcall(getsenv, script)
-			if ok and typeof(env) == "table" then
-				for name, value in pairs(env) do
-					if typeof(name) == "string" and typeof(value) == "function"
-						and (name:lower():find("playegg") or name:lower():find("egganim"))
-					then
-						eggHookState.frontend = env
-						eggHookState.script = script
-						eggHookState.path = "scan:" .. script.Name .. "." .. name
-						return true
-					end
-				end
-			end
-		end
-	end
-	return false
-end
-
-local function applyEggHook()
-	if not eggHookState.script or not eggHookState.script.Parent then
-		eggHookState.frontend = nil
-		eggHookState.script = nil
-		eggHookState.funcName = nil
-	end
-
-	if not eggHookState.frontend then
-		if not findEggFrontend() and not scanForFrontend() then return false end
-	end
-
-	local okEnv, freshEnv = pcall(getsenv, eggHookState.script)
-	if okEnv and typeof(freshEnv) == "table" and freshEnv ~= eggHookState.frontend then
-		eggHookState.frontend = freshEnv
-		eggHookState.funcName = nil
-	end
-
-	local env = eggHookState.frontend
-	if not env then return false end
-
-	local funcName = eggHookState.funcName
-	if not funcName or typeof(env[funcName]) ~= "function" then
-		funcName = nil
-		for _, name in ipairs({ "PlayEggAnimation", "PlayAnimation", "PlayEgg", "PlayHatch" }) do
-			if typeof(env[name]) == "function" then
-				funcName = name
-				break
-			end
-		end
-		if not funcName then
-			for name, value in pairs(env) do
-				if typeof(name) == "string" and typeof(value) == "function"
-					and (name:lower():find("playegg") or name:lower():find("egganim"))
-				then
-					funcName = name
-					break
-				end
-			end
-		end
-	end
-	if not funcName then return false end
-	eggHookState.funcName = funcName
-
-	if not eggHookState.hook then
-		pcall(setstackhidden, onEggAnimation, true)
-		pcall(debug.setinfo, onEggAnimation, "s", "[C]")
-		pcall(debug.setinfo, onEggAnimation, "n", "")
-		eggHookState.hook = onEggAnimation
-	end
-
-	local current = env[funcName]
-	if current == eggHookState.hook then return true end
-
-	-- Cache bản gốc rồi gán hook trực tiếp vào env (giống 25MS).
-	eggHookState.callOriginal = current
-	local ok = pcall(function() env[funcName] = eggHookState.hook end)
+	end)
 	return ok
 end
 
-local function installEggHook()
-	if not eggHookState.frontend then
-		if not findEggFrontend() then scanForFrontend() end
+-- Khoi phuc Ham goc khi tat het toggle
+local function restoreEggAnimation()
+	local env = getEggEnv()
+	local genv = getgenv()
+	local original = genv.cachedFunctions and genv.cachedFunctions.EggAnimation
+	if not env or not original then
+		return false
 	end
-	return applyEggHook()
+	local ok = pcall(function()
+		env.PlayEggAnimation = original
+	end)
+	return ok
 end
 
+-- 25MS: toggles luu trong getgenv().v_settings.functionToggles
+local function syncEggToggles()
+	local genv = getgenv()
+	if typeof(genv.v_settings) ~= "table" then
+		genv.v_settings = {}
+	end
+	local vSettings = genv.v_settings
+	if typeof(vSettings.functionToggles) ~= "table" then
+		vSettings.functionToggles = {}
+	end
+	vSettings.functionToggles.HideEggAnimation = settings.HideEggAnim and true or false
+	vSettings.functionToggles.HookEggAnimation = settings.HookEggAnimation and true or false
+end
+
+--- Cap nhat hook theo 2 toggle: chi hien message, khong hien hieu ung.
+vrt.eggApi.refresh = function()
+	pcall(cacheEggFunctions)
+	syncEggToggles()
+	if settings.HookEggAnimation then
+		hookEggAnimation()
+		return
+	end
+	if settings.HideEggAnim then
+		hideEggAnimation()
+		return
+	end
+	restoreEggAnimation()
+end
+
+vrt.eggApi.hideEggAnimation = hideEggAnimation
+vrt.eggApi.hookEggAnimation = hookEggAnimation
+vrt.eggApi.restoreEggAnimation = restoreEggAnimation
+vrt.eggApi.cacheEggFunctions = cacheEggFunctions
+vrt.eggApi.getEggEnv = getEggEnv
+
+--- Khoi tao: cache truoc khi game ghi de.
+local function initEgg()
+	if not cacheEggFunctions() then
+		pcall(ensureGenvTable)
+	end
+	vrt.eggApi.refresh()
+end
+vrt.initEgg = initEgg
+vrt.eggApi.installEggHook = initEgg
+vrt.eggApi.applyEggHook = vrt.eggApi.refresh
+
+-- 25MS: while true do ... wait(5) end -> giu hook moi 0.5s (an toan hon)
 local function startEggHookLoop()
-	if eggHookState.thread then return end
-	eggHookState.thread = task.spawn(function()
+	if vrt.eggThread then
+		return
+	end
+	vrt.eggThread = task.spawn(function()
 		while getgenv().VRT_LOADED do
-			if settings.HookEggAnimation or settings.HideEggAnim then
-				pcall(applyEggHook)
-				task.wait(0.1)
-			else
-				task.wait(0.5)
+			if settings.HideEggAnim or settings.HookEggAnimation then
+				pcall(vrt.eggApi.refresh)
 			end
+			task.wait(0.5)
 		end
-		eggHookState.thread = nil
+		vrt.eggThread = nil
 	end)
 end
+vrt.startEggHookLoop = startEggHookLoop
+vrt.eggApi.startEggHookLoop = startEggHookLoop
 
-localPlayer.CharacterAdded:Connect(function()
-	task.defer(function()
-		task.wait(1)
-		eggHookState.frontend = nil
-		eggHookState.script = nil
-		eggHookState.funcName = nil
-		if settings.HookEggAnimation or settings.HideEggAnim then
-			pcall(installEggHook)
+-- Cho frontend ton tai roi moi cache.
+task.spawn(function()
+	for _ = 1, 60 do
+		if cacheEggFunctions() then
+			break
 		end
-	end)
+		task.wait(1)
+	end
+	pcall(initEgg)
+	startEggHookLoop()
 end)
 
-task.spawn(function()
-	for _ = 1, 10 do
-		if eggHookState.frontend then break end
-		if not findEggFrontend() then scanForFrontend() end
-		task.wait(1)
+localPlayer.CharacterAdded:Connect(function()
+	task.wait(1)
+	if settings.HideEggAnim or settings.HookEggAnimation then
+		pcall(initEgg)
 	end
-	startEggHookLoop()
 end)
 
 -- -----------------------------------------------------
@@ -1114,46 +1047,95 @@ local function getEggPositions()
 	end
 	if not worldName then return {} end
 	local list = {}
-	local function scanContainer(container)
-		if not container then return end
-		for _, model in ipairs(container:GetChildren()) do
-			if model:IsA("Model") then
-				local cached = eggPositionCache[model]
-				if not cached then
-					local eggNumber = tonumber(model.Name:match("^(%d+)"))
-					if eggNumber and getEggIdByNumber(eggNumber) then
-						local light = model:FindFirstChild("Light")
-						local position
-						if light then
-							position = light.CFrame.Position
-						else
-							local ok, pivot = pcall(function() return model.WorldPivot end)
-							position = ok and pivot.Position or nil
-						end
-						if position then
-							cached = { eggNumber = eggNumber, position = position }
-							eggPositionCache[model] = cached
-						end
-					end
-				end
-				if cached then
-					table.insert(list, cached)
-				end
+	local function addModel(model)
+		if not model:IsA("Model") then
+			return
+		end
+		local entry = eggPositionCache[model]
+		if not entry then
+			local eggNumber = tonumber(model.Name:match("^(%d+)"))
+			if not eggNumber or not getEggIdByNumber(eggNumber) then
+				return
+			end
+			entry = { eggNumber = eggNumber, position = nil }
+			eggPositionCache[model] = entry
+		end
+		if not entry.position then
+			local light = model:FindFirstChild("Light")
+			if light then
+				entry.position = light.CFrame.Position
+			else
+				local ok, pivot = pcall(function() return model.WorldPivot end)
+				entry.position = ok and pivot.Position or nil
 			end
 		end
+		if entry.position then
+			list[#list + 1] = entry
+		end
 	end
+
+	-- Chi quet con truc tiep cua folder cua world hien tai (khong de quy sau).
+	local containers = {}
 	local zoneEggs = things:FindFirstChild("ZoneEggs")
 	if zoneEggs and zoneEggs:FindFirstChild(worldName) then
-		scanContainer(zoneEggs[worldName])
+		containers[#containers + 1] = zoneEggs[worldName]
 	end
 	local eggs = things:FindFirstChild("Eggs")
 	if eggs and eggs:FindFirstChild(worldName) then
-		scanContainer(eggs[worldName])
+		containers[#containers + 1] = eggs[worldName]
 	end
+	for _, container in ipairs(containers) do
+		for _, model in ipairs(container:GetChildren()) do
+			addModel(model)
+		end
+	end
+
 	EggPositions.data = list
 	EggPositions.timestamp = now
 	return list
 end
+
+-- -----------------------------------------------------
+-- CHONG FREEZE KHI LAI GAN EGG
+-- -----------------------------------------------------
+-- Vung egg duoc quet co gioi han + cache, khong GetDescendants toan workspace.
+local eggNearestCache = { list = {}, timestamp = 0, ttl = 0.75 }
+
+--- Tra danh sach egg gan nhat nhung co throttle + loc theo ban kinh.
+---@return table
+local function getNearbyEggs(radius)
+	local root = getRoot()
+	if not root then
+		return {}
+	end
+	local now = os.clock()
+	local cache = eggNearestCache
+	local rootPos = root.Position
+	local stale = (now - cache.timestamp) > cache.ttl
+	local movedFar = cache.rootPos and (cache.rootPos - rootPos).Magnitude > 12
+	if not stale and not movedFar then
+		return cache.list
+	end
+
+	local radiusSq = radius * radius
+	local result = {}
+	local ok, eggs = pcall(getEggPositions)
+	if ok and typeof(eggs) == "table" then
+		for _, egg in ipairs(eggs) do
+			local dx = egg.position.X - rootPos.X
+			local dz = egg.position.Z - rootPos.Z
+			if dx * dx + dz * dz <= radiusSq then
+				result[#result + 1] = egg
+			end
+		end
+	end
+
+	cache.list = result
+	cache.rootPos = rootPos
+	cache.timestamp = now
+	return result
+end
+vrt.getNearbyEggs = getNearbyEggs
 
 -- -----------------------------------------------------
 -- Dropdown memoize
@@ -1555,10 +1537,18 @@ local function hatchCustomEgg(uuid)
 	return total
 end
 
-Core.OpenEgg = function()
-	local root = getRoot()
-	if not root then return end
-	local rootPos = root.Position
+-- Chon egg gan nhat: cache 0.75s + loc ban kinh, khong quet toan workspace moi tick.
+local eggPickCache = { target = nil, timestamp = 0, ttl = 0.75, lastHatch = 0 }
+
+--- Tim egg gan nhat trong ban kinh cho phep (custom + normal).
+---@param rootPos Vector3
+---@return any?, number?, table?, number?
+local function pickClosestEgg(rootPos)
+	local now = os.clock()
+	local cache = eggPickCache
+	if cache.target and (now - cache.timestamp) < cache.ttl then
+		return table.unpack(cache.target)
+	end
 
 	local customEgg, customDist = nil, math.huge
 	local cmds = Modules.CustomEggsCmds
@@ -1577,7 +1567,7 @@ Core.OpenEgg = function()
 	end
 
 	local normalEgg, normalDist = nil, math.huge
-	local eggs = getEggPositions()
+	local eggs = getNearbyEggs(settings.OpenEggRadius or 120)
 	for _, egg in ipairs(eggs) do
 		local d = (egg.position - rootPos).Magnitude
 		if d < normalDist then
@@ -1585,7 +1575,24 @@ Core.OpenEgg = function()
 		end
 	end
 
+	cache.target = { customEgg, customDist, normalEgg, normalDist }
+	cache.timestamp = now
+	return customEgg, customDist, normalEgg, normalDist
+end
+
+Core.OpenEgg = function()
+	local root = getRoot()
+	if not root then return end
+
+	-- Gioi han tan suat hatch de khong spam remote va khong treo client.
+	local now = os.clock()
+	if now - eggPickCache.lastHatch < (settings.OpenEggCooldown or 0.5) then
+		return
+	end
+
+	local customEgg, customDist, normalEgg, normalDist = pickClosestEgg(root.Position)
 	if not customEgg and not normalEgg then return end
+	eggPickCache.lastHatch = now
 
 	if customEgg and customDist <= normalDist then
 		hatchCustomEgg(customEgg)
@@ -3415,8 +3422,9 @@ if tabs.eggs then
 		Callback = function(value)
 			settings.HideEggAnim = value
 			queueSave()
-			if value then pcall(hideEggGuis) end
-			pcall(installEggHook)
+			if vrt.eggApi then
+				pcall(vrt.eggApi.refresh)
+			end
 		end,
 	})
 	tabs.eggs:CreateToggle({
@@ -3425,7 +3433,9 @@ if tabs.eggs then
 		Callback = function(value)
 			settings.HookEggAnimation = value
 			queueSave()
-			pcall(installEggHook)
+			if vrt.eggApi then
+				pcall(vrt.eggApi.refresh)
+			end
 		end,
 	})
 	tabs.eggs:CreateToggle({
@@ -3434,7 +3444,7 @@ if tabs.eggs then
 			settings.OpenEgg = value
 			queueSave()
 			vrt.eggDebugLogged = false
-			if value then startLoop("OpenEgg", 0.3, Core.OpenEgg) else stopLoop("OpenEgg") end
+			if value then startLoop("OpenEgg", 0.5, Core.OpenEgg) else stopLoop("OpenEgg") end
 		end,
 	})
 
@@ -3867,7 +3877,7 @@ task.spawn(function()
 	if settings.ConsumeFruits then startLoop("ConsumeFruits", 3, Core.ConsumeFruits) end
 	if settings.AutoTimeTrial then startLoop("AutoTimeTrial", 5, Core.OpenTimeTrialChests) end
 	if settings.FarmTreehouse then startLoop("FarmTreehouse", 5, Core.FarmTreehouse) end
-	if settings.OpenEgg then startLoop("OpenEgg", 0.3, Core.OpenEgg) end
+	if settings.OpenEgg then startLoop("OpenEgg", 0.5, Core.OpenEgg) end
 	if settings.OpenSelectedEgg then startLoop("OpenSelectedEgg", 0.3, Core.OpenSelectedEgg) end
 	if settings.BuySelectedCustomEgg then startLoop("BuySelectedCustomEgg", 0.6, Core.BuySelectedCustomEgg) end
 	if settings.Daycare then startLoop("Daycare", 30, Core.Daycare) end
@@ -3903,7 +3913,7 @@ task.spawn(function()
 	if settings.InfinitePetSpeed then Core.InfinitePetSpeed(true) end
 	if settings.AutoUseFlagInZone then startLoop("AutoUseFlagInZone", 1, Core.AutoUseFlag) end
 	if settings.AdminAbuse then startLoop("AdminAbuse", 5, Core.ClaimFakeCharacters) end
-	if settings.HookEggAnimation or settings.HideEggAnim then pcall(installEggHook) end
+	if settings.HookEggAnimation or settings.HideEggAnim then pcall(initEgg) end
 end)
 
 -- -----------------------------------------------------
@@ -3924,11 +3934,6 @@ getgenv().VRT_Unload = function()
 		pcall(function() vrt.optimizeConnection:Disconnect() end)
 		vrt.optimizeConnection = nil
 	end
-	for gui, conn in pairs(vrt.eggGuiConnections or {}) do
-		pcall(function() conn:Disconnect() end)
-	end
-	vrt.eggGuiConnections = {}
-
 	if AntiCheat.originalKey then
 		pcall(function()
 			local blunderMessage = require(replicatedStorage:WaitForChild("Blunder", 5):WaitForChild("BlunderMessage", 5))
@@ -3940,16 +3945,12 @@ getgenv().VRT_Unload = function()
 		AntiCheat.active = false
 	end
 
-	if eggHookState.callOriginal and eggHookState.frontend and eggHookState.funcName then
-		pcall(function()
-			eggHookState.frontend[eggHookState.funcName] = eggHookState.callOriginal
-		end)
+	-- Khoi phuc PlayEggAnimation goc.
+	pcall(restoreEggAnimation)
+	vrt.eggThread = nil
+	if vrt.eggApi then
+		vrt.eggApi.detach = nil
 	end
-	eggHookState.hook = nil
-	eggHookState.callOriginal = nil
-	eggHookState.thread = nil
-	eggHookState.script = nil
-	eggHookState.message = nil
 
 	pcall(saveConfig)
 	pcall(function() rayfield:Destroy() end)
