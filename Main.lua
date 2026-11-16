@@ -218,7 +218,7 @@ stage("xong bước AC")
 -- -----------------------------------------------------
 -- Modules.
 -- -----------------------------------------------------
-local function safeRequire(instance)
+local function safeRequire(instance, timeout)
 	if not instance or typeof(instance) ~= "Instance" then
 		return nil
 	end
@@ -228,11 +228,11 @@ local function safeRequire(instance)
 		finished = true
 	end)
 	local startedAt = os.clock()
-	while not finished and os.clock() - startedAt < 5 do
+	while not finished and os.clock() - startedAt < (timeout or 5) do
 		task.wait()
 	end
 	if not finished then
-		warn("[VRT] require quá 5s, bỏ qua module: " .. instance.Name)
+		warn("[VRT] require quá hạn, bỏ qua module: " .. instance.Name)
 		return nil
 	end
 	return ok and result or nil
@@ -618,8 +618,8 @@ local function getDirectoryIds(folderName)
 	if folder then
 		for _, child in ipairs(folder:GetChildren()) do
 			local id
-			local ok, data = pcall(require, child)
-			if ok and typeof(data) == "table" and data._id then
+			local data = safeRequire(child, 2)
+			if typeof(data) == "table" and data._id then
 				id = data._id
 			else
 				local parts = string.split(child.Name, " | ")
@@ -1219,8 +1219,8 @@ local function getGiftIds()
 		if giftsFolder then
 			for _, child in ipairs(giftsFolder:GetChildren()) do
 				local id
-				local ok, data = pcall(require, child)
-				if ok and typeof(data) == "table" and data._id then
+				local data = safeRequire(child, 2)
+				if typeof(data) == "table" and data._id then
 					id = data._id
 				else
 					local parts = string.split(child.Name, " | ")
@@ -1251,8 +1251,8 @@ local function getLibraryDirIds(folderName)
 	if folder then
 		for _, child in ipairs(folder:GetChildren()) do
 			local id
-			local ok, data = pcall(require, child)
-			if ok and typeof(data) == "table" and data._id then
+			local data = safeRequire(child, 2)
+			if typeof(data) == "table" and data._id then
 				id = data._id
 			else
 				id = child.Name
@@ -3143,7 +3143,30 @@ end
 
 getgenv().VRT_RefreshDropdowns = refreshAllDropdowns
 
+-- Mỗi tab dựng trong thread riêng + xpcall: lỗi ở tab nào thì báo đúng tab đó, các tab khác vẫn lên.
+local function buildTab(name, builder)
+	task.spawn(function()
+		local finished = false
+		task.delay(20, function()
+			if finished then return end
+			warn("[VRT] Tab " .. name .. " dựng quá 20s (có thể bị treo ở require/Save).")
+			pcall(function()
+				rayfield:Notify({ Title = "VRT: tab " .. name, Content = "Đang dựng quá lâu, có thể bị treo.", Duration = 10 })
+			end)
+		end)
+		local ok, err = xpcall(builder, function(e) return tostring(e) .. "\n" .. debug.traceback() end)
+		finished = true
+		if not ok then
+			warn("[VRT] Lỗi tab " .. name .. ": " .. tostring(err))
+			pcall(function()
+				rayfield:Notify({ Title = "VRT lỗi tab " .. name, Content = tostring(err):sub(1, 180), Duration = 20 })
+			end)
+		end
+	end)
+end
+
 -- ================= AUTO-FARM =================
+buildTab("Auto-Farm", function()
 if tabs.farm then
 	tabs.farm:CreateSection("Farming Section")
 	tabs.farm:CreateSlider({
@@ -3283,8 +3306,10 @@ if tabs.farm then
 		Callback = function() Core.OptimizeBreakables() end,
 	})
 end
+end)
 
 -- ================= AUTO KEYS / TICKETS =================
+buildTab("Keys", function()
 if tabs.keys then
 	tabs.keys:CreateSection("Spinny Wheels Section")
 	wheelsDropdown = tabs.keys:CreateDropdown({
@@ -3379,8 +3404,10 @@ if tabs.keys then
 		Callback = function() fire("Instancing_PlayerLeaveInstance", TREEHOUSE_ID) end,
 	})
 end
+end)
 
 -- ================= EGGS =================
+buildTab("Eggs", function()
 if tabs.eggs then
 	tabs.eggs:CreateSection("Egg Opening")
 	tabs.eggs:CreateToggle({
@@ -3461,8 +3488,10 @@ if tabs.eggs then
 		end,
 	})
 end
+end)
 
 -- ================= AUTO =================
+buildTab("Auto", function()
 if tabs.auto then
 	tabs.auto:CreateToggle({
 		Name = "Auto Daycare (Claim and Enroll)", CurrentValue = settings.Daycare, Flag = "Daycare",
@@ -3576,8 +3605,10 @@ if tabs.auto then
 		end,
 	})
 end
+end)
 
 -- ================= UPDATE =================
+buildTab("Update", function()
 if tabs.update then
 	tabs.update:CreateSection("Fruits")
 	fruitUpgradeDropdown = tabs.update:CreateDropdown({
@@ -3617,8 +3648,10 @@ if tabs.update then
 		Callback = toggleLoop("EmpowerEnchants", 2, Core.EmpowerEnchants),
 	})
 end
+end)
 
 -- ================= AUTO-RANK =================
+buildTab("Rank", function()
 if tabs.rank then
 	tabs.rank:CreateSection("Ranking Section")
 	tabs.rank:CreateToggle({
@@ -3671,8 +3704,10 @@ if tabs.rank then
 		end,
 	})
 end
+end)
 
 -- ================= ADMIN ABUSE =================
+buildTab("Admin", function()
 if tabs.secret then
 	tabs.secret:CreateSection("Admin Abuse Section")
 	tabs.secret:CreateToggle({
@@ -3728,8 +3763,10 @@ if tabs.secret then
 		end,
 	})
 end
+end)
 
 -- ================= MAILBOX =================
+buildTab("Mailbox", function()
 if tabs.mailbox then
 	tabs.mailbox:CreateInput({
 		Name = "Input Username", PlaceholderText = "Input Username",
@@ -3783,6 +3820,7 @@ if tabs.mailbox then
 		end,
 	})
 end
+end)
 
 -- -----------------------------------------------------
 -- Refresh dropdowns
